@@ -8,7 +8,7 @@
     <parent>
         <groupId>ru.loolzaaa.games.vue-gaming-room-java-server</groupId>
         <artifactId>vue-gaming-room-java-server</artifactId>
-        <version>0.1.3</version>
+        <version>0.1.4</version>
     </parent>
 
     <artifactId>java-server-spring-boot-starter</artifactId>
