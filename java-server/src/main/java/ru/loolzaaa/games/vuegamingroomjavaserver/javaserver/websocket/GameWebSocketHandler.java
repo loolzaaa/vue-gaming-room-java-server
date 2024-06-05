@@ -10,6 +10,7 @@ import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
+import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.exception.RoomException;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Game;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Member;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Room;
@@ -26,7 +27,8 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
-import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.WebSocketEventProcessor.*;
+import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.WebSocketEventProcessor.DATA_PROPERTY_NAME;
+import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.WebSocketEventProcessor.EVENT_PROPERTY_NAME;
 
 
 @RequiredArgsConstructor
@@ -36,6 +38,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
     public static final String UPDATE_MEMBERS = "UPDATE_MEMBERS";
     public static final String GAME_STATE = "GAME_STATE";
+    public static final String UPDATE_SETTINGS = "UPDATE_SETTINGS";
     public static final String START_GAME = "START_GAME";
     public static final String RESTART_GAME = "RESTART_GAME";
 
@@ -124,7 +127,15 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         Consumer<String> callbackEvent = e -> sendEvent(code, e);
 
         try {
-            webSocketEventProcessor.incomingEvent(messageNode, game, userId, sendMessage, callbackEvent);
+            if (event.equals(UPDATE_SETTINGS)) {
+                Member member = room.getMemberByUserId(userId);
+                if (member == null || !member.isAdmin()) {
+                    throw new RoomException("The member doesn't exist or it is not an admin");
+                }
+                webSocketEventProcessor.updateGameSettings(messageNode.get(DATA_PROPERTY_NAME), game, sendMessage, callbackEvent);
+            } else {
+                webSocketEventProcessor.incomingEvent(messageNode, game, userId, sendMessage, callbackEvent);
+            }
         } catch (Exception e) {
             ObjectNode errorNode = mapper.createObjectNode();
             errorNode.put(EVENT_PROPERTY_NAME, ERROR);
