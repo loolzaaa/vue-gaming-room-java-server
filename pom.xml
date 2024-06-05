@@ -7,7 +7,7 @@
 
     <groupId>ru.loolzaaa.games.vue-gaming-room-java-server</groupId>
     <artifactId>vue-gaming-room-java-server</artifactId>
-    <version>0.2.0</version>
+    <version>0.2.1</version>
 
     <name>vue-gaming-room-java-server</name>
     <description>Project with Java Server for Vue Gaming Room</description>
