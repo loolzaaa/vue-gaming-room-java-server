@@ -107,6 +107,38 @@ public class RoomService {
         return new RoomDTO(code, room.getWebSocketToken(), room.getGame().getName(), room.isGameStarted(), member.getUserId());
     }
 
+    public void changeMemberNickname(String code, String userId, String newNickname) {
+        Room<? extends Game> room = rooms.get(code);
+        if (room == null) {
+            throw new RoomException("The room doesn't exist");
+        }
+
+        Member member = room.getMemberByUserId(userId);
+        if (member == null) {
+            throw new RoomException("The member doesn't exist");
+        }
+
+        member.setNickname(newNickname);
+
+        room.setLastActivity(LocalDateTime.now());
+    }
+
+    public void changeMemberColor(String code, String userId, String newColor) {
+        Room<? extends Game> room = rooms.get(code);
+        if (room == null) {
+            throw new RoomException("The room doesn't exist");
+        }
+
+        Member member = room.getMemberByUserId(userId);
+        if (member == null) {
+            throw new RoomException("The member doesn't exist");
+        }
+
+        member.setColor(newColor);
+
+        room.setLastActivity(LocalDateTime.now());
+    }
+
     public void changeMemberPlayerStatus(String code, String userId, boolean newStatus) {
         Room<? extends Game> room = rooms.get(code);
         if (room == null) {
@@ -185,6 +217,17 @@ public class RoomService {
         gameService.startNewGame(room.getGame(), players);
 
         room.setLastActivity(LocalDateTime.now());
+    }
+
+    public List<Member> getAllSpectators(String code) {
+        Room<? extends Game> room = rooms.get(code);
+        if (room == null) {
+            throw new RoomException("The room doesn't exist");
+        }
+
+        return room.getMembers().stream()
+                .filter(Member::isSpectator)
+                .toList();
     }
 
     private String generateRoomCode() {

@@ -5,8 +5,11 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.dto.RoomDTO;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.exception.RoomException;
+import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Member;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.RoomService;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.GameWebSocketHandler;
+
+import java.util.List;
 
 @RequiredArgsConstructor
 @RestController
@@ -32,6 +35,24 @@ public class RoomController {
         RoomDTO roomDTO = roomService.joinToRoom(code, userId, nickname);
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.UPDATE_MEMBERS);
         return roomDTO;
+    }
+
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @PostMapping("/{code}/{userId}/nickname")
+    public void changeMemberNickname(@PathVariable("code") String code,
+                                     @PathVariable("userId") String userId,
+                                     @RequestParam("newNickname") String newNickname) {
+        roomService.changeMemberNickname(code, userId, newNickname);
+        gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.UPDATE_MEMBERS);
+    }
+
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @PostMapping("/{code}/{userId}/color")
+    public void changeMemberColor(@PathVariable("code") String code,
+                                  @PathVariable("userId") String userId,
+                                  @RequestParam("newColor") String newColor) {
+        roomService.changeMemberColor(code, userId, newColor);
+        gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.UPDATE_MEMBERS);
     }
 
     @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -70,6 +91,11 @@ public class RoomController {
         roomService.startGame(code, userId, true);
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.UPDATE_MEMBERS);
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.START_GAME);
+    }
+
+    @GetMapping("/{code}/spectators")
+    public List<Member> getAllSpectators(@PathVariable("code") String code) {
+        return roomService.getAllSpectators(code);
     }
 
     @ResponseStatus(HttpStatus.BAD_REQUEST)
