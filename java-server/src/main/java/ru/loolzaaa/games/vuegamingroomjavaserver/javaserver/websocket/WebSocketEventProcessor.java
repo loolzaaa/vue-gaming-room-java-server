@@ -13,7 +13,18 @@ public interface WebSocketEventProcessor {
 
     JsonNode createGameState(Game g, String userId);
 
-    void incomingEvent(ObjectNode eventNode, Game g, Consumer<JsonNode> sendMessage, Consumer<String> callbackEvent);
+    JsonNode startGame(Game g, String userId);
+
+    JsonNode restartGame(Game g, String userId);
+
+    void incomingEvent(
+            ObjectNode eventNode,
+            Game g,
+            String userId,
+            Consumer<JsonNode> sendMessage,
+            Consumer<String> callbackEvent);
 
     ObjectNode outgoingEvent(String event, Game g, String userId);
+
+    JsonNode processEventError(Exception e);
 }

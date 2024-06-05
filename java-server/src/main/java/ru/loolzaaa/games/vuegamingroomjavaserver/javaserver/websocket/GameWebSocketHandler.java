@@ -39,9 +39,9 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     public static final String START_GAME = "START_GAME";
     public static final String RESTART_GAME = "RESTART_GAME";
 
-    public static final String PING = "PING";
-    public static final String PONG = "PONG";
-    public static final String ERROR = "ERROR";
+    private static final String ERROR = "ERROR";
+    private static final String PING = "PING";
+    private static final String PONG = "PONG";
 
     private final Map<String, String> webSocketTokenRoomCodeMap = new ConcurrentHashMap<>();
     private final Map<String, RoomWebSocketSessionsHolder> roomSessionsMap = new ConcurrentHashMap<>();
@@ -82,7 +82,12 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         // Отправка текущего состояния игры (если начата) для вновь подключившегося
         Room<? extends Game> room = roomService.getRooms().get(code);
         if (room.isGameStarted()) {
-            JsonNode gameState = webSocketEventProcessor.createGameState(room.getGame(), userId);
+            ObjectNode gameState = mapper.createObjectNode();
+            gameState.put(EVENT_PROPERTY_NAME, GAME_STATE);
+            JsonNode gameStateData = webSocketEventProcessor.createGameState(room.getGame(), userId);
+            if (gameStateData != null) {
+                gameState.set(DATA_PROPERTY_NAME, gameStateData);
+            }
             sendTextMessage(session, playerWebSocketSession.lock, gameState);
             log.debug("Send game state for user id {} in room {}: {}", userId, code, gameState);
         }
@@ -107,10 +112,25 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         Room<?> room = roomService.getRooms().get(code);
         Game game = room.getGame();
 
+        RoomWebSocketSessionsHolder roomWebSocketSessionsHolder = roomSessionsMap.get(code);
+        List<PlayerWebSocketSession> playerWebSocketSessions = roomWebSocketSessionsHolder.playerWebSocketSessions;
+        String userId = playerWebSocketSessions.stream()
+                .filter(playerWebSocketSession -> playerWebSocketSession.webSocketSession.getId().equals(session.getId()))
+                .map(playerWebSocketSession -> playerWebSocketSession.userId)
+                .findFirst()
+                .orElseThrow();
+
         Consumer<JsonNode> sendMessage = payload -> sendTextMessage(session, sessionLock, payload);
         Consumer<String> callbackEvent = e -> sendEvent(code, e);
 
-        webSocketEventProcessor.incomingEvent(messageNode, game, sendMessage, callbackEvent);
+        try {
+            webSocketEventProcessor.incomingEvent(messageNode, game, userId, sendMessage, callbackEvent);
+        } catch (Exception e) {
+            ObjectNode errorNode = mapper.createObjectNode();
+            errorNode.put(EVENT_PROPERTY_NAME, ERROR);
+            errorNode.set(DATA_PROPERTY_NAME, webSocketEventProcessor.processEventError(e));
+            sendMessage.accept(errorNode);
+        }
 
         room.setLastActivity(LocalDateTime.now());
     }
@@ -145,6 +165,17 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     sendTextMessage(playerWebSocketSession, eventNode);
                 }
             }
+            case GAME_STATE -> {
+                for (PlayerWebSocketSession playerWebSocketSession : playerWebSocketSessions) {
+                    ObjectNode eventNode = mapper.createObjectNode();
+                    eventNode.put(EVENT_PROPERTY_NAME, GAME_STATE);
+                    JsonNode gameStateData = webSocketEventProcessor.createGameState(room.getGame(), playerWebSocketSession.userId);
+                    if (gameStateData != null) {
+                        eventNode.set(DATA_PROPERTY_NAME, gameStateData);
+                    }
+                    sendTextMessage(playerWebSocketSession, eventNode);
+                }
+            }
             case START_GAME -> {
                 room.setGameStarted(true);
 
@@ -159,19 +190,25 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                         .filter(playerSession -> spectators.contains(playerSession.userId))
                         .forEach(this::closePlayerSession);
                 for (PlayerWebSocketSession playerWebSocketSession : playerWebSocketSessions) {
-                    ObjectNode eventNode = webSocketEventProcessor.outgoingEvent(event, game, playerWebSocketSession.userId);
-                    if (eventNode != null) {
-                        sendTextMessage(playerWebSocketSession, eventNode);
+                    ObjectNode eventNode = mapper.createObjectNode();
+                    eventNode.put(EVENT_PROPERTY_NAME, START_GAME);
+                    JsonNode startGameData = webSocketEventProcessor.startGame(game, playerWebSocketSession.userId);
+                    if (startGameData != null) {
+                        eventNode.set(DATA_PROPERTY_NAME, startGameData);
                     }
+                    sendTextMessage(playerWebSocketSession, eventNode);
                 }
             }
             case RESTART_GAME -> {
                 room.setGameStarted(false);
                 for (PlayerWebSocketSession playerWebSocketSession : playerWebSocketSessions) {
-                    ObjectNode eventNode = webSocketEventProcessor.outgoingEvent(event, game, playerWebSocketSession.userId);
-                    if (eventNode != null) {
-                        sendTextMessage(playerWebSocketSession, eventNode);
+                    ObjectNode eventNode = mapper.createObjectNode();
+                    eventNode.put(EVENT_PROPERTY_NAME, RESTART_GAME);
+                    JsonNode restartGameData = webSocketEventProcessor.restartGame(game, playerWebSocketSession.userId);
+                    if (restartGameData != null) {
+                        eventNode.set(DATA_PROPERTY_NAME, restartGameData);
                     }
+                    sendTextMessage(playerWebSocketSession, eventNode);
                 }
             }
             default -> {
