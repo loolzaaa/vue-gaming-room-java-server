@@ -27,8 +27,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
-import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.WebSocketEventProcessor.DATA_PROPERTY_NAME;
-import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.WebSocketEventProcessor.EVENT_PROPERTY_NAME;
+import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.WebSocketEventProcessor.*;
 
 
 @RequiredArgsConstructor
@@ -132,7 +131,11 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 if (member == null || !member.isAdmin()) {
                     throw new RoomException("The member doesn't exist or it is not an admin");
                 }
-                webSocketEventProcessor.updateGameSettings(messageNode.get(DATA_PROPERTY_NAME), game, sendMessage, callbackEvent);
+                webSocketEventProcessor.updateGameSettings(
+                        messageNode.get(DATA_PROPERTY_NAME).get("settings"),
+                        game,
+                        sendMessage,
+                        callbackEvent);
             } else {
                 webSocketEventProcessor.incomingEvent(messageNode, game, userId, sendMessage, callbackEvent);
             }
