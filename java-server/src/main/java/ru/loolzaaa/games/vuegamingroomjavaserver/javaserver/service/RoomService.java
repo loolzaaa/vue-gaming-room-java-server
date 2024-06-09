@@ -118,6 +118,13 @@ public class RoomService {
             throw new RoomException("The member doesn't exist");
         }
 
+        long sameNicknameUsers = room.getMembers().stream()
+                .filter(m -> m.getNickname().equals(newNickname))
+                .count();
+        if (sameNicknameUsers > 0) {
+            throw new RoomException("User with same nickname already exists");
+        }
+
         member.setNickname(newNickname);
 
         room.setLastActivity(LocalDateTime.now());
