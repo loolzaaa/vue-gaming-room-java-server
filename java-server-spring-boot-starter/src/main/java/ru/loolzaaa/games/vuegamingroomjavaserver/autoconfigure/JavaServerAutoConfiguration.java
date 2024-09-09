@@ -12,6 +12,7 @@ import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
+import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.controller.GameController;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.controller.RoomController;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Game;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.GameService;
@@ -39,6 +40,12 @@ public class JavaServerAutoConfiguration {
                                               RoomService roomService,
                                               WebSocketEventProcessor webSocketEventProcessor) {
         return new GameWebSocketHandler(mapper, roomService, webSocketEventProcessor);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    GameController gameController(GameService<?> gameService) {
+        return new GameController(gameService);
     }
 
     @Bean
