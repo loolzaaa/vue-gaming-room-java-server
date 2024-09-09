@@ -8,7 +8,7 @@
     <parent>
         <groupId>ru.loolzaaa.games.vue-gaming-room-java-server</groupId>
         <artifactId>vue-gaming-room-java-server</artifactId>
-        <version>0.2.3</version>
+        <version>0.2.4</version>
     </parent>
 
     <artifactId>java-server-spring-boot-starter</artifactId>
@@ -33,6 +33,25 @@
             <groupId>ru.loolzaaa.games.vue-gaming-room-java-server</groupId>
             <artifactId>java-server</artifactId>
             <version>${project.parent.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-test</artifactId>
+            <version>6.1.12</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.3</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>5.13.0</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 
