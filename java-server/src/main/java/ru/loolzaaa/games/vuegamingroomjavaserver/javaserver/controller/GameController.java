@@ -1,6 +1,7 @@
 package ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.controller;
 
 import lombok.AllArgsConstructor;
+import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -20,6 +21,7 @@ public class GameController {
         return new GameInfo(gameService.getGameName());
     }
 
+    @Getter
     @AllArgsConstructor
     public static class GameInfo {
         String gameName;
