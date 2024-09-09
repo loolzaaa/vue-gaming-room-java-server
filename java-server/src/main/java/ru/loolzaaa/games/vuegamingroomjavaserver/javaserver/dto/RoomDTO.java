@@ -12,7 +12,6 @@ import lombok.Setter;
 public class RoomDTO {
     private String code;
     private String wsToken;
-    private String gameName;
     private boolean isGameStarted;
     private String userId;
 }

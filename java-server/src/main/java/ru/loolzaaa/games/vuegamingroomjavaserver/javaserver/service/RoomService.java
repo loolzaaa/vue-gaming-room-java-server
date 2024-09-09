@@ -57,7 +57,7 @@ public class RoomService {
             roomsLock.unlock();
         }
 
-        return new RoomDTO(code, webSocketToken, gameInstance.getName(), room.isGameStarted(), userId);
+        return new RoomDTO(code, webSocketToken, room.isGameStarted(), userId);
     }
 
     public RoomDTO joinToRoom(String code, String userId, String nickname) {
@@ -104,7 +104,7 @@ public class RoomService {
 
         room.setLastActivity(LocalDateTime.now());
 
-        return new RoomDTO(code, room.getWebSocketToken(), room.getGame().getName(), room.isGameStarted(), member.getUserId());
+        return new RoomDTO(code, room.getWebSocketToken(), room.isGameStarted(), member.getUserId());
     }
 
     public void changeMemberNickname(String code, String userId, String newNickname) {
