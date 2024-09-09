@@ -24,7 +24,7 @@ After all players are ready and the game starts, observers are removed from the 
 <dependency>
   <groupId>ru.loolzaaa.games.vue-gaming-room-java-server</groupId>
   <artifactId>java-server-spring-boot-starter</artifactId>
-  <version>0.2.3</version>
+  <version>0.2.4</version>
 </dependency>
 ```
 
@@ -123,6 +123,11 @@ which must implement the `GameService<G extends Game>` interface.
 ```java
 @Service
 public class GameServiceImpl implements GameService<GameImpl> {
+    @Override
+    public String getGameName() {
+        return GameImpl.GAME_NAME;
+    }
+    
     @Override
     public GameImpl createGameInstance() {
         return new GameImpl();
