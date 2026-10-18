@@ -18,8 +18,11 @@ public interface WebSocketEventProcessor {
 
     /**
      * Публичное состояние для наблюдателей/экранов. Не должно содержать приватных данных игроков.
+     * Если у игры нет публичного экрана, можно вернуть {@code null} — клиент покажет заглушку.
      */
-    JsonNode createDisplayState(Game g);
+    default JsonNode createDisplayState(Game g) {
+        return null;
+    }
 
     void updateGameSettings(JsonNode settingsNode,
                             Game g,
@@ -33,8 +36,11 @@ public interface WebSocketEventProcessor {
 
     /**
      * Данные события START_GAME для наблюдателя/экрана.
+     * По умолчанию используется {@link #createDisplayState(Game)}.
      */
-    JsonNode startDisplayGame(Game g);
+    default JsonNode startDisplayGame(Game g) {
+        return createDisplayState(g);
+    }
 
     /**
      * Данные события RESTART_GAME для игрока.
@@ -43,8 +49,11 @@ public interface WebSocketEventProcessor {
 
     /**
      * Данные события RESTART_GAME для наблюдателя/экрана.
+     * По умолчанию используется {@link #createDisplayState(Game)}.
      */
-    JsonNode restartDisplayGame(Game g);
+    default JsonNode restartDisplayGame(Game g) {
+        return createDisplayState(g);
+    }
 
     /**
      * Входящее игровое событие. Сервер вызывает метод только для игроков.
@@ -63,8 +72,11 @@ public interface WebSocketEventProcessor {
 
     /**
      * Payload кастомного события для наблюдателя/экрана.
+     * По умолчанию событие экрану не отправляется.
      */
-    ObjectNode outgoingDisplayEvent(String event, Game g);
+    default ObjectNode outgoingDisplayEvent(String event, Game g) {
+        return null;
+    }
 
     JsonNode processEventError(Exception e);
 }

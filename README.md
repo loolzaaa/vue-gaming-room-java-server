@@ -4,7 +4,7 @@ A basic platform for creating web-based games with a room concept.
 
 The server allows you to create/join rooms. Each room can have 1 game. 
 Each room contains a set of room members, who can become players or observers. 
-After all players are ready and the game starts, observers are removed from the room.
+Players control the game, while observers stay in the room after the start and receive a public display state.
 
 ## Usage
 
@@ -437,11 +437,12 @@ public class GameEventProcessorImpl implements WebSocketEventProcessor {
 #### Observers and public screens
 
 - Observers are not removed when the game starts; they keep receiving public display state.
+- If a game has no public screen, `createDisplayState` may return `null`; observers receive `GAME_STATE` without data and the client renders the configured `DisplayPlaceholder` or `displayComp` fallback.
 - The room admin may stay an observer and keep admin controls (settings/start/restart).
 - `incomingEvent` is called only for players; observers cannot control the game.
 - `UPDATE_MEMBERS` contains all online members: players and observers. The client filters players for the lobby table.
 - New members may join after the game has started; they always join as observers (`changeMemberPlayerStatus` is blocked after start).
-- Multiple TVs can join as separate observer accounts (each with its own token), or use several WebSocket sessions of one account up to `vgr.websocket.max-sessions-per-user`.
+- Multiple TVs should use separate observer accounts (each with its own token). The WebSocket session limit is a safety limit, not a replacement for separate accounts.
 
 ## Game client
 
