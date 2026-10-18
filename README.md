@@ -112,8 +112,7 @@ so clients can discover a custom path automatically.
   For simple board games this is an acceptable trade-off. If you add payments, accounts, valuable
   inventory or user-generated HTML, treat XSS as a real threat: use HttpOnly cookies or SSO,
   a strict CSP, sanitization and token rotation.
-- **Game state concurrency**: game implementations are currently responsible for synchronizing
-  access to their own state; per-room serialization is planned separately.
+- **Game state concurrency**: the server serializes all game callbacks per room (start/restart, incoming events, state generation). Implementations do not need to synchronize their state. Avoid long blocking operations inside game callbacks: they hold the per-room game lock.
 
 #### Rate limiting at the reverse proxy
 
@@ -268,8 +267,12 @@ public class GameSettings {
 
 #### Create game service
 
-All actions that will change the state of the game must be performed in the corresponding service, 
+All actions that will change the state of the game must be performed in the corresponding service,
 which must implement the `GameService<G extends Game>` interface.
+
+Calls to `GameService` and `WebSocketEventProcessor` are serialized per room by the server.
+Game implementations do not need their own synchronization for game state; avoid long blocking
+operations inside callbacks because they hold the per-room game lock.
 
 ```java
 @Service
@@ -285,9 +288,7 @@ public class GameServiceImpl implements GameService<GameImpl> {
     }
 
     @Override
-    public void startNewGame(Game g, List<Member> members) {
-        GameImpl game = (GameImpl) g;
-
+    public void startNewGame(GameImpl game, List<Member> members) {
         // Start game routine
     }
 

@@ -1,5 +1,6 @@
 package ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -7,6 +8,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Getter
 public class Room<G extends Game> {
@@ -15,6 +17,8 @@ public class Room<G extends Game> {
     private String code;
     private final List<Member> members = new CopyOnWriteArrayList<>();
     private final G game;
+    @JsonIgnore
+    private final ReentrantLock gameLock = new ReentrantLock();
     @Setter
     private volatile boolean gameStarted;
     @Setter

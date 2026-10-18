@@ -46,14 +46,19 @@ public class JavaServerAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    RoomService roomService(GameService<? extends Game> gameService, ServerSettings settings) {
-        return new RoomService(gameService, settings);
+    RoomService<?> roomService(GameService<? extends Game> gameService, ServerSettings settings) {
+        return createRoomService(gameService, settings);
+    }
+
+    private static <G extends Game> RoomService<G> createRoomService(GameService<G> gameService,
+                                                                     ServerSettings settings) {
+        return new RoomService<>(gameService, settings);
     }
 
     @Bean
     @ConditionalOnMissingBean
     GameWebSocketHandler gameWebSocketHandler(ObjectMapper mapper,
-                                              RoomService roomService,
+                                              RoomService<?> roomService,
                                               WebSocketEventProcessor webSocketEventProcessor,
                                               ServerSettings settings) {
         return new GameWebSocketHandler(mapper, roomService, webSocketEventProcessor, settings);
@@ -67,14 +72,14 @@ public class JavaServerAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    RoomController roomController(GameWebSocketHandler gameWebSocketHandler, RoomService roomService) {
+    RoomController roomController(GameWebSocketHandler gameWebSocketHandler, RoomService<?> roomService) {
         return new RoomController(gameWebSocketHandler, roomService);
     }
 
     @Bean
     @ConditionalOnMissingBean
     RoomCleanTask roomCleanTask(GameWebSocketHandler gameWebSocketHandler,
-                                RoomService roomService,
+                                RoomService<?> roomService,
                                 ServerSettings settings) {
         return new RoomCleanTask(roomService, gameWebSocketHandler, settings);
     }

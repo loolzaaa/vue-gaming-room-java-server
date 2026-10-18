@@ -17,17 +17,17 @@ public class RoomCleanTask {
 
     private static final Logger log = LoggerFactory.getLogger(RoomCleanTask.class);
 
-    private final RoomService roomService;
+    private final RoomService<?> roomService;
 
     private final GameWebSocketHandler gameWebSocketHandler;
 
     private final Duration inactiveTimeout;
 
-    public RoomCleanTask(RoomService roomService, GameWebSocketHandler gameWebSocketHandler) {
+    public RoomCleanTask(RoomService<?> roomService, GameWebSocketHandler gameWebSocketHandler) {
         this(roomService, gameWebSocketHandler, ServerSettings.defaults());
     }
 
-    public RoomCleanTask(RoomService roomService,
+    public RoomCleanTask(RoomService<?> roomService,
                          GameWebSocketHandler gameWebSocketHandler,
                          ServerSettings settings) {
         this.roomService = roomService;

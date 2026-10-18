@@ -65,7 +65,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler implements Dispos
     private final Map<String, PendingTicket> wsTickets = new ConcurrentHashMap<>();
 
     private final ObjectMapper mapper;
-    private final RoomService roomService;
+    private final RoomService<?> roomService;
     private final WebSocketEventProcessor webSocketEventProcessor;
 
     private final int maxMessageSize;
@@ -89,13 +89,13 @@ public class GameWebSocketHandler extends TextWebSocketHandler implements Dispos
     }
 
     public GameWebSocketHandler(ObjectMapper mapper,
-                                RoomService roomService,
+                                RoomService<?> roomService,
                                 WebSocketEventProcessor webSocketEventProcessor) {
         this(mapper, roomService, webSocketEventProcessor, ServerSettings.defaults());
     }
 
     public GameWebSocketHandler(ObjectMapper mapper,
-                                RoomService roomService,
+                                RoomService<?> roomService,
                                 WebSocketEventProcessor webSocketEventProcessor,
                                 ServerSettings settings) {
         this.mapper = mapper;
@@ -174,9 +174,15 @@ public class GameWebSocketHandler extends TextWebSocketHandler implements Dispos
             ObjectNode gameState = mapper.createObjectNode();
             gameState.put(EVENT_PROPERTY_NAME, GAME_STATE);
             try {
-                JsonNode gameStateData = player
-                        ? webSocketEventProcessor.createPlayerState(room.getGame(), userId)
-                        : webSocketEventProcessor.createDisplayState(room.getGame());
+                JsonNode gameStateData;
+                room.getGameLock().lock();
+                try {
+                    gameStateData = player
+                            ? webSocketEventProcessor.createPlayerState(room.getGame(), userId)
+                            : webSocketEventProcessor.createDisplayState(room.getGame());
+                } finally {
+                    room.getGameLock().unlock();
+                }
                 if (gameStateData != null) {
                     gameState.set(DATA_PROPERTY_NAME, gameStateData);
                 }
@@ -268,27 +274,32 @@ public class GameWebSocketHandler extends TextWebSocketHandler implements Dispos
         Consumer<JsonNode> sendMessage = payload -> sendTextMessage(playerWebSocketSession, event, payload, false);
         Consumer<String> callbackEvent = e -> sendEvent(code, e);
 
+        room.getGameLock().lock();
         try {
-            if (UPDATE_SETTINGS.equals(event)) {
-                if (member == null || !member.isAdmin()) {
-                    throw new RoomException("The member doesn't exist or it is not an admin");
+            try {
+                if (UPDATE_SETTINGS.equals(event)) {
+                    if (member == null || !member.isAdmin()) {
+                        throw new RoomException("The member doesn't exist or it is not an admin");
+                    }
+                    JsonNode settingsNode = dataNode.get("settings");
+                    if (settingsNode == null || settingsNode.isNull()) {
+                        throw new RoomException("Game settings are missing");
+                    }
+                    webSocketEventProcessor.updateGameSettings(settingsNode, game, sendMessage, callbackEvent);
+                } else {
+                    if (member == null || !member.isPlayer()) {
+                        throw new RoomException("Only players can send game events");
+                    }
+                    webSocketEventProcessor.incomingEvent(messageNode, game, userId, sendMessage, callbackEvent);
                 }
-                JsonNode settingsNode = dataNode.get("settings");
-                if (settingsNode == null || settingsNode.isNull()) {
-                    throw new RoomException("Game settings are missing");
-                }
-                webSocketEventProcessor.updateGameSettings(settingsNode, game, sendMessage, callbackEvent);
-            } else {
-                if (member == null || !member.isPlayer()) {
-                    throw new RoomException("Only players can send game events");
-                }
-                webSocketEventProcessor.incomingEvent(messageNode, game, userId, sendMessage, callbackEvent);
+            } catch (Exception e) {
+                log.debug("Error processing event {} from user {} in room {}: {}",
+                        event, userId, code, e.getLocalizedMessage());
+                log.trace("Event processing error", e);
+                sendErrorMessage(playerWebSocketSession, processEventError(e));
             }
-        } catch (Exception e) {
-            log.debug("Error processing event {} from user {} in room {}: {}",
-                    event, userId, code, e.getLocalizedMessage());
-            log.trace("Event processing error", e);
-            sendErrorMessage(playerWebSocketSession, processEventError(e));
+        } finally {
+            room.getGameLock().unlock();
         }
 
         synchronized (room) {
@@ -322,7 +333,9 @@ public class GameWebSocketHandler extends TextWebSocketHandler implements Dispos
         }
         Game game = room.getGame();
 
-        switch (event) {
+        room.getGameLock().lock();
+        try {
+            switch (event) {
             case UPDATE_MEMBERS -> {
                 ObjectNode eventNode = mapper.createObjectNode();
                 eventNode.put(EVENT_PROPERTY_NAME, UPDATE_MEMBERS);
@@ -480,6 +493,9 @@ public class GameWebSocketHandler extends TextWebSocketHandler implements Dispos
                     }
                 }
             }
+            }
+        } finally {
+            room.getGameLock().unlock();
         }
         synchronized (room) {
             room.setLastActivity(LocalDateTime.now());

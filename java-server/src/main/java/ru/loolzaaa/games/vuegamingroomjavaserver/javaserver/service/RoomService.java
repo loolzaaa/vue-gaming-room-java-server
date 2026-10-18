@@ -24,7 +24,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Pattern;
 
-public class RoomService {
+public class RoomService<G extends Game> {
 
     private static final String ROOM_CODE_CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     private static final int ROOM_CODE_LENGTH = 4;
@@ -35,19 +35,19 @@ public class RoomService {
     private static final String MEMBER_COLOR_FORMAT = "#%06x";
 
     @Getter
-    private final Map<String, Room<? extends Game>> rooms = new ConcurrentHashMap<>();
+    private final Map<String, Room<G>> rooms = new ConcurrentHashMap<>();
     @Getter
     private final Lock roomsLock = new ReentrantLock();
 
-    private final GameService<? extends Game> gameService;
+    private final GameService<G> gameService;
     private final int maxMembers;
     private final int maxNicknameLength;
 
-    public RoomService(GameService<? extends Game> gameService) {
+    public RoomService(GameService<G> gameService) {
         this(gameService, ServerSettings.defaults());
     }
 
-    public RoomService(GameService<? extends Game> gameService, ServerSettings settings) {
+    public RoomService(GameService<G> gameService, ServerSettings settings) {
         this.gameService = Objects.requireNonNull(gameService, "gameService must not be null");
         this.maxMembers = settings.room().maxMembers();
         this.maxNicknameLength = settings.room().maxNicknameLength();
@@ -68,10 +68,10 @@ public class RoomService {
         member.setSpectator(true);
         member.setReady(false);
 
-        Game gameInstance = gameService.createGameInstance();
+        G gameInstance = gameService.createGameInstance();
 
         final String code;
-        final Room<?> room;
+        final Room<G> room;
         // Генерация кода и публикация комнаты должны быть атомарными,
         // иначе две комнаты могут получить одинаковый код
         roomsLock.lock();
@@ -94,7 +94,7 @@ public class RoomService {
     public RoomDTO joinToRoom(String code, String userId, String nickname, String memberToken) {
         nickname = normalizeNickname(nickname);
 
-        Room<? extends Game> room = getRoom(code);
+        Room<G> room = getRoom(code);
 
         synchronized (room) {
             checkRoomIsRegistered(code, room);
@@ -144,7 +144,7 @@ public class RoomService {
     }
 
     public void changeMemberNickname(String code, String userId, String newNickname) {
-        Room<? extends Game> room = getRoom(code);
+        Room<G> room = getRoom(code);
 
         synchronized (room) {
             checkRoomIsRegistered(code, room);
@@ -161,7 +161,7 @@ public class RoomService {
     }
 
     public void changeMemberColor(String code, String userId, String newColor) {
-        Room<? extends Game> room = getRoom(code);
+        Room<G> room = getRoom(code);
 
         synchronized (room) {
             checkRoomIsRegistered(code, room);
@@ -178,7 +178,7 @@ public class RoomService {
     }
 
     public void changeMemberPlayerStatus(String code, String userId, boolean newStatus) {
-        Room<? extends Game> room = getRoom(code);
+        Room<G> room = getRoom(code);
 
         synchronized (room) {
             checkRoomIsRegistered(code, room);
@@ -206,7 +206,7 @@ public class RoomService {
     }
 
     public void changeMemberReadyStatus(String code, String userId, boolean newStatus) {
-        Room<? extends Game> room = getRoom(code);
+        Room<G> room = getRoom(code);
 
         synchronized (room) {
             checkRoomIsRegistered(code, room);
@@ -227,43 +227,53 @@ public class RoomService {
     }
 
     public void startGame(String code, String userId, boolean forceStart) {
-        Room<? extends Game> room = getRoom(code);
+        Room<G> room = getRoom(code);
 
-        synchronized (room) {
-            checkRoomIsRegistered(code, room);
-            startGame(room, userId, forceStart);
+        room.getGameLock().lock();
+        try {
+            synchronized (room) {
+                checkRoomIsRegistered(code, room);
+                startGame(room, userId, forceStart);
+            }
+        } finally {
+            room.getGameLock().unlock();
         }
     }
 
     public void restartGame(String code, String userId) {
-        Room<? extends Game> room = getRoom(code);
+        Room<G> room = getRoom(code);
 
-        synchronized (room) {
-            checkRoomIsRegistered(code, room);
+        room.getGameLock().lock();
+        try {
+            synchronized (room) {
+                checkRoomIsRegistered(code, room);
 
-            if (!room.isGameStarted()) {
-                throw new RoomException("Game is not started");
+                if (!room.isGameStarted()) {
+                    throw new RoomException("Game is not started");
+                }
+
+                Member member = room.getMemberByUserId(userId);
+                if (member == null || !member.isAdmin()) {
+                    throw new RoomException("The member doesn't exist or it is not an admin");
+                }
+
+                room.setGameStarted(false);
+                try {
+                    startGame(room, userId, true);
+                } catch (RuntimeException e) {
+                    // Не оставляем комнату в состоянии "игра не начата",
+                    // если перезапуск не удался
+                    room.setGameStarted(true);
+                    throw e;
+                }
             }
-
-            Member member = room.getMemberByUserId(userId);
-            if (member == null || !member.isAdmin()) {
-                throw new RoomException("The member doesn't exist or it is not an admin");
-            }
-
-            room.setGameStarted(false);
-            try {
-                startGame(room, userId, true);
-            } catch (RuntimeException e) {
-                // Не оставляем комнату в состоянии "игра не начата",
-                // если перезапуск не удался
-                room.setGameStarted(true);
-                throw e;
-            }
+        } finally {
+            room.getGameLock().unlock();
         }
     }
 
     public List<Member> getAllSpectators(String code) {
-        Room<? extends Game> room = getRoom(code);
+        Room<G> room = getRoom(code);
 
         synchronized (room) {
             checkRoomIsRegistered(code, room);
@@ -278,7 +288,7 @@ public class RoomService {
      * Проверяет, что переданный токен принадлежит участнику комнаты.
      */
     public void validateMemberToken(String code, String userId, String memberToken) {
-        Room<? extends Game> room = getRoom(code);
+        Room<G> room = getRoom(code);
 
         synchronized (room) {
             checkRoomIsRegistered(code, room);
@@ -294,7 +304,7 @@ public class RoomService {
      * Старт игры. Вызывается только при удерживаемой блокировке комнаты,
      * чтобы проверки и изменение состояния были атомарными.
      */
-    private void startGame(Room<? extends Game> room, String userId, boolean forceStart) {
+    private void startGame(Room<G> room, String userId, boolean forceStart) {
         if (room.isGameStarted()) {
             throw new RoomException("Game already started");
         }
@@ -330,11 +340,11 @@ public class RoomService {
         room.setLastActivity(LocalDateTime.now());
     }
 
-    private Room<? extends Game> getRoom(String code) {
+    private Room<G> getRoom(String code) {
         if (code == null || !ROOM_CODE_PATTERN.matcher(code).matches()) {
             throw new RoomException("The room doesn't exist");
         }
-        Room<? extends Game> room = rooms.get(code);
+        Room<G> room = rooms.get(code);
         if (room == null) {
             throw new RoomException("The room doesn't exist");
         }
@@ -359,7 +369,7 @@ public class RoomService {
      * @param excludedUserId идентификатор участника, которому разрешено сохранять свой никнейм
      * @return нормализованный (trim + NFC) никнейм
      */
-    private String validateNickname(Room<? extends Game> room, String nickname, String excludedUserId) {
+    private String validateNickname(Room<G> room, String nickname, String excludedUserId) {
         String normalizedNickname = normalizeNickname(nickname);
         boolean sameNicknameExists = room.getMembers().stream()
                 .filter(m -> !m.getUserId().equals(excludedUserId))

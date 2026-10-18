@@ -20,7 +20,7 @@ public class RoomController {
 
     private final GameWebSocketHandler gameWebSocketHandler;
 
-    private final RoomService roomService;
+    private final RoomService<?> roomService;
 
     @PostMapping(path = "/create", produces = "application/json")
     public RoomDTO createRoom(@RequestParam(value = "userId", required = false) String userId,

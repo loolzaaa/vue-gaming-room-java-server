@@ -9,5 +9,5 @@ import java.util.List;
 public interface GameService<G extends Game> {
     String getGameName();
     G createGameInstance();
-    void startNewGame(Game g, List<Member> members);
+    void startNewGame(G g, List<Member> members);
 }
