@@ -61,7 +61,7 @@ so clients can discover a custom path automatically.
 #### Security
 
 - Every member gets an individual secret token. The token is returned in `RoomDTO.wsToken` and is not exposed in `UPDATE_MEMBERS` or other member payloads.
-- All mutating REST endpoints require the `X-Member-Token` header. `POST /room/create` does not require it; `POST /room/join/{code}` requires it only when an existing member with the same `userId` is reconnecting.
+- All mutating REST endpoints require the `X-Member-Token` header. `POST /room/create` does not require it; `POST /room/join/{code}` requires it only when an existing member with the same `userId` is reconnecting. The spectator list endpoint requires both `userId` and `X-Member-Token`.
 - The recommended WebSocket flow:
   1. `POST /room/{code}/ws-ticket?userId={userId}` with the `X-Member-Token` header.
   2. Connect to `ws(s)://.../game-ws?ticket={ticket}`. Tickets are single-use and expire after `vgr.websocket.ticket-ttl`.
