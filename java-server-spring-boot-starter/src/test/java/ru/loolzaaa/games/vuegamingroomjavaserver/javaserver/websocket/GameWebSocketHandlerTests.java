@@ -14,7 +14,9 @@ import ru.loolzaaa.games.vuegamingroomjavaserver.autoconfigure.JavaServerAutoCon
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.dto.RoomDTO;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.exception.RoomException;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.RoomService;
+import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.settings.ServerSettings;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -26,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @SpringJUnitWebConfig({JavaServerAutoConfiguration.class, IntegrationTestConfiguration.class})
@@ -117,6 +120,28 @@ class GameWebSocketHandlerTests {
         assertEquals("boom", response.get("data").asText());
     }
 
+    @Test
+    void shouldConfigureDefaultIdleTimeout() throws Exception {
+        TestSession session = connect(createRoom("ws-idle-default", gameWebSocketHandler), gameWebSocketHandler);
+
+        verify(session.nativeSession()).setMaxIdleTimeout(120_000L);
+    }
+
+    @Test
+    void shouldConfigureCustomIdleTimeout() throws Exception {
+        ServerSettings settings = new ServerSettings(
+                ServerSettings.RoomSettings.defaults(),
+                new ServerSettings.WebSocketSettings(
+                        "/game-ws", List.of("*"), 64 * 1024,
+                        Duration.ofSeconds(30), Duration.ofSeconds(5), 128 * 1024));
+        GameWebSocketHandler handler = new GameWebSocketHandler(
+                mapper, roomService, mock(WebSocketEventProcessor.class), settings);
+
+        TestSession session = connect(createRoom("ws-idle-custom", handler), handler);
+
+        verify(session.nativeSession()).setMaxIdleTimeout(30_000L);
+    }
+
     private RoomDTO createRoom(String userId, GameWebSocketHandler handler) {
         RoomDTO roomDTO = roomService.createRoom(userId, "admin");
         handler.createNewSessionsListForRoom(roomDTO.getWsToken(), roomDTO.getCode());
@@ -145,7 +170,7 @@ class GameWebSocketHandlerTests {
         handler.afterConnectionEstablished(webSocketSession);
         sentMessages.clear();
 
-        return new TestSession(webSocketSession, sentMessages);
+        return new TestSession(webSocketSession, wsSession, sentMessages);
     }
 
     private JsonNode lastMessage(TestSession session) throws Exception {
@@ -153,6 +178,8 @@ class GameWebSocketHandlerTests {
         return mapper.readTree(session.sentMessages.get(session.sentMessages.size() - 1));
     }
 
-    private record TestSession(StandardWebSocketSession webSocketSession, List<String> sentMessages) {
+    private record TestSession(StandardWebSocketSession webSocketSession,
+                               WsSession nativeSession,
+                               List<String> sentMessages) {
     }
 }

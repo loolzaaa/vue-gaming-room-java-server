@@ -6,9 +6,12 @@ import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.dto.RoomDTO;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.exception.RoomException;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Member;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Room;
+import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.settings.ServerSettings;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.support.TestFixtures.TestGame;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.support.TestFixtures.TestGameService;
 
+import java.text.Normalizer;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.IntStream;
@@ -591,6 +594,112 @@ class RoomServiceTest {
         assertThatThrownBy(() -> roomService.getAllSpectators("NONE"))
                 .isInstanceOf(RoomException.class)
                 .hasMessage("The room doesn't exist");
+    }
+
+    // ---------- validation ----------
+
+    @Test
+    void shouldRejectTooLongNickname() {
+        RoomDTO roomDTO = createRoom("admin");
+
+        assertThatThrownBy(() -> roomService.changeMemberNickname(
+                roomDTO.getCode(), ADMIN_ID, "a".repeat(33)))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("Nickname must be at most 32 characters length");
+    }
+
+    @Test
+    void shouldRejectControlCharactersInNickname() {
+        RoomDTO roomDTO = createRoom("admin");
+
+        assertThatThrownBy(() -> roomService.changeMemberNickname(
+                roomDTO.getCode(), ADMIN_ID, "bad\u0000name"))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("Nickname must not contain control characters");
+    }
+
+    @Test
+    void shouldRejectCaseInsensitiveDuplicateNickname() {
+        RoomDTO roomDTO = createRoom("admin");
+        roomService.joinToRoom(roomDTO.getCode(), "user-1", "Bob");
+
+        assertThatThrownBy(() -> roomService.joinToRoom(roomDTO.getCode(), "user-2", "BOB"))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("User with same nickname already exists");
+    }
+
+    @Test
+    void shouldTreatUnicodeEquivalentNicknamesAsDuplicates() {
+        RoomDTO roomDTO = createRoom("admin");
+        roomService.joinToRoom(roomDTO.getCode(), "user-1", "\u00e9");
+        String decomposed = Normalizer.normalize("\u00e9", Normalizer.Form.NFD);
+
+        assertThat(decomposed).isNotEqualTo("\u00e9");
+        assertThatThrownBy(() -> roomService.joinToRoom(roomDTO.getCode(), "user-2", decomposed))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("User with same nickname already exists");
+    }
+
+    @Test
+    void shouldRejectInvalidColor() {
+        RoomDTO roomDTO = createRoom("admin");
+
+        for (String color : new String[]{null, "", "red", "#fff", "#1234567", "#GGGGGG"}) {
+            assertThatThrownBy(() -> roomService.changeMemberColor(roomDTO.getCode(), ADMIN_ID, color))
+                    .isInstanceOf(RoomException.class)
+                    .hasMessage("Color must be in #RRGGBB format");
+        }
+    }
+
+    @Test
+    void shouldNormalizeColorToLowerCase() {
+        RoomDTO roomDTO = createRoom("admin");
+
+        roomService.changeMemberColor(roomDTO.getCode(), ADMIN_ID, "#AABBCC");
+
+        assertThat(member(roomDTO.getCode(), ADMIN_ID).getColor()).isEqualTo("#aabbcc");
+    }
+
+    @Test
+    void shouldRejectInvalidRoomCode() {
+        assertThatThrownBy(() -> roomService.joinToRoom("abc", "user", "Alice"))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("The room doesn't exist");
+        assertThatThrownBy(() -> roomService.joinToRoom("abcde", "user", "Alice"))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("The room doesn't exist");
+    }
+
+    @Test
+    void shouldRejectUserIdWithColon() {
+        assertThatThrownBy(() -> roomService.createRoom("bad:id", "admin"))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("Invalid user id");
+    }
+
+    @Test
+    void shouldRejectTooLongUserId() {
+        assertThatThrownBy(() -> roomService.createRoom("u".repeat(65), "admin"))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("Invalid user id");
+    }
+
+    @Test
+    void shouldUseConfiguredNicknameLengthAndMaxMembers() {
+        ServerSettings settings = new ServerSettings(
+                new ServerSettings.RoomSettings(2, Duration.ofMinutes(1), 5),
+                ServerSettings.WebSocketSettings.defaults());
+        roomService = new RoomService(gameService, settings);
+        RoomDTO roomDTO = createRoom("admin");
+        roomService.joinToRoom(roomDTO.getCode(), "user-1", "Bob");
+
+        assertThatThrownBy(() -> roomService.changeMemberNickname(
+                roomDTO.getCode(), ADMIN_ID, "Alice!"))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("Nickname must be at most 5 characters length");
+        assertThatThrownBy(() -> roomService.joinToRoom(roomDTO.getCode(), "user-2", "Carol"))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("Room is full");
     }
 
     // ---------- helpers ----------

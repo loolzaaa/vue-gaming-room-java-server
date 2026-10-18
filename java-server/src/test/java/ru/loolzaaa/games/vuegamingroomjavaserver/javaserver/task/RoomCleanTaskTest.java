@@ -5,9 +5,11 @@ import org.junit.jupiter.api.Test;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.dto.RoomDTO;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Room;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.RoomService;
+import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.settings.ServerSettings;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.support.TestFixtures.TestGameService;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.GameWebSocketHandler;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -88,6 +90,24 @@ class RoomCleanTaskTest {
 
         verify(gameWebSocketHandler, times(1)).removeSessionsListForRoom(roomDTO.getCode());
         verifyNoMoreInteractions(gameWebSocketHandler);
+    }
+
+    @Test
+    void shouldUseConfiguredInactiveTimeout() {
+        ServerSettings settings = new ServerSettings(
+                new ServerSettings.RoomSettings(200, Duration.ofMinutes(5), 32),
+                ServerSettings.WebSocketSettings.defaults());
+        roomService = new RoomService(new TestGameService(1, 2), settings);
+        gameWebSocketHandler = mock(GameWebSocketHandler.class);
+        roomCleanTask = new RoomCleanTask(roomService, gameWebSocketHandler, settings);
+
+        RoomDTO roomDTO = roomService.createRoom("admin-id", "admin");
+        setLastActivity(roomDTO.getCode(), LocalDateTime.now().minusMinutes(6));
+
+        roomCleanTask.clean();
+
+        assertThat(roomService.getRooms()).doesNotContainKey(roomDTO.getCode());
+        verify(gameWebSocketHandler).removeSessionsListForRoom(roomDTO.getCode());
     }
 
     private void setLastActivity(String code, LocalDateTime lastActivity) {
