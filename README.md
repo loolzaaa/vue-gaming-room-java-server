@@ -8,6 +8,11 @@ After all players are ready and the game starts, observers are removed from the 
 
 ## Usage
 
+### Requirements
+
+- JDK 21
+- Maven 3.8.5+ (or the bundled Maven Wrapper)
+
 ### Install server dependency locally
 
 - Clone this repo

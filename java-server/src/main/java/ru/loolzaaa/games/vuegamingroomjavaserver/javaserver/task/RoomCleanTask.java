@@ -1,7 +1,7 @@
 package ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.task;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Room;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.RoomService;
@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit;
 
 public class RoomCleanTask {
 
-    private static final Logger log = LogManager.getLogger(RoomCleanTask.class);
+    private static final Logger log = LoggerFactory.getLogger(RoomCleanTask.class);
 
     private static final int INACTIVE_TIME = 60;
 

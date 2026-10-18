@@ -5,8 +5,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -34,7 +34,7 @@ import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.Web
 @RequiredArgsConstructor
 public class GameWebSocketHandler extends TextWebSocketHandler {
 
-    private static final Logger log = LogManager.getLogger(GameWebSocketHandler.class);
+    private static final Logger log = LoggerFactory.getLogger(GameWebSocketHandler.class);
 
     public static final String UPDATE_MEMBERS = "UPDATE_MEMBERS";
     public static final String GAME_STATE = "GAME_STATE";
@@ -351,7 +351,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) {
         log.error("Websocket session error: {}", exception.getLocalizedMessage());
-        log.debug(exception);
+        log.debug("Websocket session error", exception);
     }
 
     @Override
