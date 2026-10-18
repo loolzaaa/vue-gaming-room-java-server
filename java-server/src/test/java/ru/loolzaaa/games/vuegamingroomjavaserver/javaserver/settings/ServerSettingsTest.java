@@ -27,6 +27,7 @@ class ServerSettingsTest {
         assertThat(settings.webSocket().rateLimitPerSecond()).isEqualTo(30);
         assertThat(settings.webSocket().rateLimitBurst()).isEqualTo(60);
         assertThat(settings.webSocket().ticketTtl()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(settings.webSocket().sendQueueCapacity()).isEqualTo(64);
         assertThat(settings.http().rateLimitPerSecond()).isEqualTo(20);
         assertThat(settings.http().rateLimitBurst()).isEqualTo(40);
     }
@@ -92,6 +93,10 @@ class ServerSettingsTest {
         assertThatThrownBy(() -> new ServerSettings.WebSocketSettings(
                 "/ws", List.of("*"), 1024, Duration.ofSeconds(1), Duration.ofSeconds(1), 1024,
                 3, 30, 60, Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ServerSettings.WebSocketSettings(
+                "/ws", List.of("*"), 1024, Duration.ofSeconds(1), Duration.ofSeconds(1), 1024,
+                3, 30, 60, Duration.ofSeconds(30), 0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

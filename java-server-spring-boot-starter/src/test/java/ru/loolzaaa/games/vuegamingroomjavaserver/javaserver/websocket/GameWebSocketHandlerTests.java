@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.websocket.CloseReason;
 import jakarta.websocket.RemoteEndpoint;
 import org.apache.tomcat.websocket.WsSession;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.junit.jupiter.web.SpringJUnitWebConfig;
@@ -18,11 +19,10 @@ import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.RoomService;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.settings.ServerSettings;
 
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -156,7 +156,7 @@ class GameWebSocketHandlerTests {
         handler.handleTextMessage(session.webSocketSession, new TextMessage("{\"event\":\"PING\"}"));
         handler.handleTextMessage(session.webSocketSession, new TextMessage("{\"event\":\"PING\"}"));
 
-        assertEquals("ERROR", lastMessage(session).get("event").asText());
+        verify(session.nativeSession(), atLeastOnce()).close(any(CloseReason.class));
     }
 
     @Test
@@ -194,7 +194,7 @@ class GameWebSocketHandlerTests {
         RemoteEndpoint.Basic remote = mock(RemoteEndpoint.Basic.class);
         when(wsSession.getBasicRemote()).thenReturn(remote);
 
-        List<String> sentMessages = new ArrayList<>();
+        List<String> sentMessages = new CopyOnWriteArrayList<>();
         doAnswer(invocation -> {
             sentMessages.add(invocation.getArgument(0));
             return null;
@@ -208,13 +208,15 @@ class GameWebSocketHandlerTests {
         webSocketSession.getAttributes().put(TokenHandshakeInterceptor.CODE_ATTRIBUTE, roomDTO.getCode());
         webSocketSession.getAttributes().put(TokenHandshakeInterceptor.USER_ID_ATTRIBUTE, roomDTO.getUserId());
         handler.afterConnectionEstablished(webSocketSession);
+        Awaitility.await().atMost(Duration.ofSeconds(2)).until(() -> !sentMessages.isEmpty());
         sentMessages.clear();
 
         return new TestSession(webSocketSession, wsSession, sentMessages);
     }
 
     private JsonNode lastMessage(TestSession session) throws Exception {
-        assertFalse(session.sentMessages.isEmpty(), "Expected at least one message to be sent");
+        Awaitility.await().atMost(Duration.ofSeconds(2))
+                .until(() -> !session.sentMessages.isEmpty());
         return mapper.readTree(session.sentMessages.get(session.sentMessages.size() - 1));
     }
 
