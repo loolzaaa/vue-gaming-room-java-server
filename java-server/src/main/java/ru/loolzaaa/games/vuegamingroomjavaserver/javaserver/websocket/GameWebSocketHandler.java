@@ -111,6 +111,10 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         log.debug("Incoming message: {}", message);
 
         Lock sessionLock = sessionLockMap.get(session.getId());
+        if (sessionLock == null) {
+            log.warn("No lock found for websocket session {}", session.getId());
+            return;
+        }
 
         ObjectNode messageNode = (ObjectNode) mapper.readTree(message.getPayload());
         String event = messageNode.get(EVENT_PROPERTY_NAME).asText();
@@ -123,9 +127,17 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
         String code = messageNode.get(DATA_PROPERTY_NAME).get("code").asText();
         Room<?> room = roomService.getRooms().get(code);
+        RoomWebSocketSessionsHolder roomWebSocketSessionsHolder = roomSessionsMap.get(code);
+        if (room == null || roomWebSocketSessionsHolder == null) {
+            ObjectNode errorNode = mapper.createObjectNode();
+            errorNode.put(EVENT_PROPERTY_NAME, ERROR);
+            errorNode.set(DATA_PROPERTY_NAME,
+                    webSocketEventProcessor.processEventError(new RoomException("The room doesn't exist")));
+            sendTextMessage(session, sessionLock, errorNode);
+            return;
+        }
         Game game = room.getGame();
 
-        RoomWebSocketSessionsHolder roomWebSocketSessionsHolder = roomSessionsMap.get(code);
         List<PlayerWebSocketSession> playerWebSocketSessions = roomWebSocketSessionsHolder.playerWebSocketSessions;
         String userId = playerWebSocketSessions.stream()
                 .filter(playerWebSocketSession -> playerWebSocketSession.webSocketSession.getId().equals(session.getId()))
@@ -138,7 +150,10 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
         try {
             if (event.equals(UPDATE_SETTINGS)) {
-                Member member = room.getMemberByUserId(userId);
+                Member member;
+                synchronized (room) {
+                    member = room.getMemberByUserId(userId);
+                }
                 if (member == null || !member.isAdmin()) {
                     throw new RoomException("The member doesn't exist or it is not an admin");
                 }
@@ -157,7 +172,9 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             sendMessage.accept(errorNode);
         }
 
-        room.setLastActivity(LocalDateTime.now());
+        synchronized (room) {
+            room.setLastActivity(LocalDateTime.now());
+        }
     }
 
     public void sendEvent(String code, String event) {
@@ -181,15 +198,19 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 List<String> onlinePlayers = playerWebSocketSessions.stream()
                         .map(playerSession -> playerSession.userId)
                         .toList();
-                long spectatorsCount = room.getMembers().stream()
-                        .filter(m -> m.isSpectator() && onlinePlayers.contains(m.getUserId()))
-                        .count();
-                List<Member> members = room.getMembers().stream()
-                        .filter(m -> m.isPlayer() && onlinePlayers.contains(m.getUserId()))
-                        .toList();
                 ObjectNode dataNode = eventNode.putObject(DATA_PROPERTY_NAME);
-                dataNode.put("spectatorsCount", spectatorsCount);
-                dataNode.set("members", mapper.valueToTree(members));
+                // Снимок участников строится под блокировкой комнаты,
+                // чтобы не сериализовать частично изменённое состояние
+                synchronized (room) {
+                    long spectatorsCount = room.getMembers().stream()
+                            .filter(m -> m.isSpectator() && onlinePlayers.contains(m.getUserId()))
+                            .count();
+                    List<Member> members = room.getMembers().stream()
+                            .filter(m -> m.isPlayer() && onlinePlayers.contains(m.getUserId()))
+                            .toList();
+                    dataNode.put("spectatorsCount", spectatorsCount);
+                    dataNode.set("members", mapper.valueToTree(members));
+                }
                 for (PlayerWebSocketSession playerWebSocketSession : playerWebSocketSessions) {
                     sendTextMessage(playerWebSocketSession, eventNode);
                 }
@@ -206,14 +227,16 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 }
             }
             case START_GAME -> {
-                room.setGameStarted(true);
-
-                // Выгнать всех наблюдателей из комнаты после старта игры
-                List<String> spectators = room.getMembers().stream()
-                        .filter(Member::isSpectator)
-                        .map(Member::getUserId)
-                        .toList();
-                room.getMembers().removeIf(member -> spectators.contains(member.getUserId()));
+                // Игра уже помечена запущенной в RoomService под блокировкой комнаты.
+                // Здесь только выгоняем наблюдателей, делая это атомарно с чтением списка
+                List<String> spectators;
+                synchronized (room) {
+                    spectators = room.getMembers().stream()
+                            .filter(Member::isSpectator)
+                            .map(Member::getUserId)
+                            .toList();
+                    room.getMembers().removeIf(member -> spectators.contains(member.getUserId()));
+                }
                 // А также закрыть их сессии, предварительно убрав из списка рассылки,
                 // чтобы не пытаться отправить им событие старта игры
                 List<PlayerWebSocketSession> spectatorSessions = playerWebSocketSessions.stream()
@@ -232,7 +255,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 }
             }
             case RESTART_GAME -> {
-                room.setGameStarted(false);
                 for (PlayerWebSocketSession playerWebSocketSession : playerWebSocketSessions) {
                     ObjectNode eventNode = mapper.createObjectNode();
                     eventNode.put(EVENT_PROPERTY_NAME, RESTART_GAME);
@@ -252,7 +274,9 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 }
             }
         }
-        room.setLastActivity(LocalDateTime.now());
+        synchronized (room) {
+            room.setLastActivity(LocalDateTime.now());
+        }
     }
 
     @Override
@@ -373,31 +397,39 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 log.trace("Room {} already removed", code);
                 return;
             }
-            Member member = room.getMemberByUserId(userId);
-            // Если игра не начата, то выгнать вылетевшего из комнаты
-            if (!room.isGameStarted()) {
-                log.trace("Kick user {} from room {} because game not started", userId, code);
-                room.getMembers().removeIf(m -> m.getUserId().equals(userId));
-            }
-            // Если вылетевший был админом, то...
-            if (member != null && member.isAdmin()) {
-                member.setAdmin(false);
-                Member firstPlayer = room.getMembers().stream()
-                        .filter(m -> m.isPlayer() && !m.getUserId().equals(userId))
-                        .findFirst()
-                        .orElse(null);
+            // Мутации комнаты выполняются под её блокировкой, чтобы не пересекаться
+            // с RoomService и планировщиком очистки
+            synchronized (room) {
+                if (roomService.getRooms().get(code) != room) {
+                    log.trace("Room {} already removed", code);
+                    return;
+                }
+                Member member = room.getMemberByUserId(userId);
+                // Если игра не начата, то выгнать вылетевшего из комнаты
+                if (!room.isGameStarted()) {
+                    log.trace("Kick user {} from room {} because game not started", userId, code);
+                    room.getMembers().removeIf(m -> m.getUserId().equals(userId));
+                }
+                // Если вылетевший был админом, то...
+                if (member != null && member.isAdmin()) {
+                    member.setAdmin(false);
+                    Member firstPlayer = room.getMembers().stream()
+                            .filter(m -> m.isPlayer() && !m.getUserId().equals(userId))
+                            .findFirst()
+                            .orElse(null);
 
-                if (firstPlayer != null) {
-                    log.trace("User {} was admin in room {}, transfer permissions to user {}",
-                            userId, code, firstPlayer.getUserId());
-                    // ... передать статус админа первому попавшемуся игроку
-                    firstPlayer.setAdmin(true);
-                } else {
-                    log.trace("User {} was admin in room {}, there is no another players, destroy room",
-                            userId, code);
-                    // ... или грохнуть всю комнату
-                    roomService.getRooms().remove(code);
-                    removeSessionsListForRoom(code);
+                    if (firstPlayer != null) {
+                        log.trace("User {} was admin in room {}, transfer permissions to user {}",
+                                userId, code, firstPlayer.getUserId());
+                        // ... передать статус админа первому попавшемуся игроку
+                        firstPlayer.setAdmin(true);
+                    } else {
+                        log.trace("User {} was admin in room {}, there is no another players, destroy room",
+                                userId, code);
+                        // ... или грохнуть всю комнату
+                        roomService.getRooms().remove(code);
+                        removeSessionsListForRoom(code);
+                    }
                 }
             }
         } finally {
