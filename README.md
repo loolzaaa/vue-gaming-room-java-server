@@ -156,6 +156,22 @@ If both nginx and the application limiter are used, enable real client IP resolu
 container (`server.forward-headers-strategy=native` for Tomcat), otherwise the application sees
 the nginx address and limits all clients as one.
 
+Notes:
+
+- `limit_req_status 429` makes nginx return the same status as the application limiter
+  (the default nginx status is `503`).
+- `limit_req_zone $binary_remote_addr ... rate=20r/s` and `burst=40 nodelay` mirror the
+  default application limits (`vgr.http.rate-limit-per-second=20`,
+  `vgr.http.rate-limit-burst=40`); tune both layers together.
+- `limit_conn` limits concurrent connections per IP, including WebSocket connections;
+  adjust `limit_conn vgr_conn 10` to the expected number of tabs/devices per client.
+- `proxy_read_timeout 120s` must be greater than the WebSocket idle timeout/PING interval
+  (`vgr.websocket.idle-timeout=120s`), otherwise nginx can drop a healthy connection.
+- The application's HTTP limiter uses `request.getRemoteAddr()` and skips `OPTIONS`
+  preflight requests; nginx limits all methods, so keep CORS preflight in mind.
+- The application returns `429` with `{"message":"Too many requests"}`; if nginx rejects first,
+  configure its error page/body separately if the client needs a JSON error.
+
 #### Create game entities
 
 First, you need to create a player entity. The best way to do this is by inheriting from an `AbstractPlayer`.
