@@ -29,7 +29,7 @@ After all players are ready and the game starts, observers are removed from the 
 <dependency>
   <groupId>ru.loolzaaa.games.vue-gaming-room-java-server</groupId>
   <artifactId>java-server-spring-boot-starter</artifactId>
-  <version>0.2.5</version>
+  <version>1.0.0</version>
 </dependency>
 ```
 
@@ -97,12 +97,64 @@ so clients can discover a custom path automatically.
   is disconnected when the limit is exceeded. Sending is still synchronous. A fully asynchronous
   per-session outbound queue with `GAME_STATE`/`UPDATE_MEMBERS` coalescing and send metrics
   is a planned improvement for larger rooms.
-- **Token rotation / revocation**: member tokens are stable for the room lifetime and are removed
-  together with the member/room. Explicit rotate/revoke/logout-all endpoints are not implemented yet.
-- **Token storage**: the reference Vue client stores the member token in `localStorage`.
-  Protect the application against XSS; for stronger isolation use an HttpOnly cookie or SSO.
+- **Token rotation / revocation (low priority)**: member tokens are stable for the room lifetime and are
+  removed together with the member/room. Explicit rotate/revoke/logout-all endpoints are not implemented.
+  For short-lived, anonymous board-game rooms this is not critical; revisit if rooms become long-lived
+  or user accounts/valuables appear.
+- **Token storage / XSS**: the reference Vue client stores the member token in `localStorage`.
+  For simple board games this is an acceptable trade-off. If you add payments, accounts, valuable
+  inventory or user-generated HTML, treat XSS as a real threat: use HttpOnly cookies or SSO,
+  a strict CSP, sanitization and token rotation.
 - **Game state concurrency**: game implementations are currently responsible for synchronizing
   access to their own state; per-room serialization is planned separately.
+
+#### Rate limiting at the reverse proxy
+
+The application limits `/room/**` requests per client address, but an edge limit is still recommended.
+Example for nginx:
+
+```nginx
+limit_req_zone $binary_remote_addr zone=vgr_room:10m rate=20r/s;
+limit_conn_zone $binary_remote_addr zone=vgr_conn:10m;
+limit_req_status 429;
+
+server {
+    listen 443 ssl;
+    server_name game.example.com;
+
+    location = /room {
+        limit_req zone=vgr_room burst=40 nodelay;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /room/ {
+        limit_req zone=vgr_room burst=40 nodelay;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /game-ws {
+        limit_conn vgr_conn 10;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+}
+```
+
+If both nginx and the application limiter are used, enable real client IP resolution in the
+container (`server.forward-headers-strategy=native` for Tomcat), otherwise the application sees
+the nginx address and limits all clients as one.
 
 #### Create game entities
 
