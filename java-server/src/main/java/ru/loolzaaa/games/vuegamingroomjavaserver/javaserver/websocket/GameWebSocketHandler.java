@@ -5,15 +5,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.websocket.Session;
-import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.adapter.NativeWebSocketSession;
 import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
-import org.springframework.web.socket.handler.SessionLimitExceededException;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.exception.RoomException;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Game;
@@ -23,8 +22,8 @@ import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.security.TokenBucket
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.RoomService;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.settings.ServerSettings;
 
-import java.io.IOException;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -39,7 +38,7 @@ import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.Web
 import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.WebSocketEventProcessor.EVENT_PROPERTY_NAME;
 
 
-public class GameWebSocketHandler extends TextWebSocketHandler {
+public class GameWebSocketHandler extends TextWebSocketHandler implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(GameWebSocketHandler.class);
 
@@ -78,6 +77,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     private final int rateLimitBurst;
     private final long ticketTtlMs;
     private final long ticketTtlNanos;
+    private final int sendQueueCapacity;
 
     public record WsIdentity(String code, String userId) {
     }
@@ -110,6 +110,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         this.rateLimitBurst = settings.webSocket().rateLimitBurst();
         this.ticketTtlMs = settings.webSocket().ticketTtl().toMillis();
         this.ticketTtlNanos = TimeUnit.MILLISECONDS.toNanos(ticketTtlMs);
+        this.sendQueueCapacity = settings.webSocket().sendQueueCapacity();
     }
 
     @Override
@@ -155,7 +156,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         WebSocketSession concurrentSession = new ConcurrentWebSocketSessionDecorator(
                 session, sendTimeLimitMs, sendBufferSize);
         PlayerWebSocketSession playerWebSocketSession = new PlayerWebSocketSession(
-                userId, concurrentSession, new TokenBucket(rateLimitPerSecond, rateLimitBurst));
+                userId, concurrentSession, new TokenBucket(rateLimitPerSecond, rateLimitBurst),
+                mapper, sendQueueCapacity);
         playerWebSocketSessions.add(playerWebSocketSession);
         playerSessionsById.put(session.getId(), playerWebSocketSession);
         closeExcessSessions(playerWebSocketSessions, playerWebSocketSession);
@@ -173,7 +175,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 if (gameStateData != null) {
                     gameState.set(DATA_PROPERTY_NAME, gameStateData);
                 }
-                sendTextMessage(playerWebSocketSession, gameState);
+                sendTextMessage(playerWebSocketSession, GAME_STATE, gameState, true);
                 log.debug("Send game state for user id {} in room {}: {}", userId, code, gameState);
             } catch (Exception e) {
                 log.error("Unable to create game state for user {} in room {}", userId, code, e);
@@ -192,7 +194,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         if (!playerWebSocketSession.rateLimiter.tryAcquire()) {
-            sendErrorMessage(playerWebSocketSession, "Rate limit exceeded");
+            log.warn("Rate limit exceeded for user {} in session {}; closing session",
+                    playerWebSocketSession.userId, session.getId());
             closePlayerSession(playerWebSocketSession);
             return;
         }
@@ -221,7 +224,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
         if (PING.equals(event)) {
             messageNode.put(EVENT_PROPERTY_NAME, PONG);
-            sendTextMessage(playerWebSocketSession, messageNode);
+            sendTextMessage(playerWebSocketSession, PONG, messageNode, false);
             return;
         }
 
@@ -253,7 +256,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
         Game game = room.getGame();
 
-        Consumer<JsonNode> sendMessage = payload -> sendTextMessage(playerWebSocketSession, payload);
+        Consumer<JsonNode> sendMessage = payload -> sendTextMessage(playerWebSocketSession, event, payload, false);
         Consumer<String> callbackEvent = e -> sendEvent(code, e);
 
         try {
@@ -286,6 +289,18 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     }
 
     public void sendEvent(String code, String event) {
+        sendEvent(code, event, false);
+    }
+
+    /**
+     * Отправляет событие в комнату.
+     * <p>
+     * Кастомные события по умолчанию не коалесцируются. Если событие содержит
+     * только актуальное состояние (аналог {@code GAME_STATE}), можно передать
+     * {@code coalescable = true}: новое сообщение заменит ещё не отправленное
+     * сообщение с тем же именем.
+     */
+    public void sendEvent(String code, String event, boolean coalescable) {
         RoomWebSocketSessionsHolder roomWebSocketSessionsHolder = roomSessionsMap.get(code);
         if (roomWebSocketSessionsHolder == null) {
             return;
@@ -325,7 +340,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     return;
                 }
                 for (PlayerWebSocketSession playerWebSocketSession : playerWebSocketSessions) {
-                    sendTextMessage(playerWebSocketSession, eventNode);
+                    sendTextMessage(playerWebSocketSession, UPDATE_MEMBERS, eventNode, true);
                 }
             }
             case GAME_STATE -> {
@@ -338,7 +353,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                         if (gameStateData != null) {
                             eventNode.set(DATA_PROPERTY_NAME, gameStateData);
                         }
-                        sendTextMessage(playerWebSocketSession, eventNode);
+                        sendTextMessage(playerWebSocketSession, GAME_STATE, eventNode, true);
                     } catch (Exception e) {
                         log.error("Unable to create game state for user {} in room {}",
                                 playerWebSocketSession.userId, code, e);
@@ -377,7 +392,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                         log.error("Unable to create start game data for user {} in room {}",
                                 playerWebSocketSession.userId, code, e);
                     }
-                    sendTextMessage(playerWebSocketSession, eventNode);
+                    sendTextMessage(playerWebSocketSession, START_GAME, eventNode, false);
                 }
             }
             case RESTART_GAME -> {
@@ -394,7 +409,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                         log.error("Unable to create restart game data for user {} in room {}",
                                 playerWebSocketSession.userId, code, e);
                     }
-                    sendTextMessage(playerWebSocketSession, eventNode);
+                    sendTextMessage(playerWebSocketSession, RESTART_GAME, eventNode, false);
                 }
             }
             default -> {
@@ -403,7 +418,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                         ObjectNode eventNode = webSocketEventProcessor.outgoingEvent(
                                 event, game, playerWebSocketSession.userId);
                         if (eventNode != null) {
-                            sendTextMessage(playerWebSocketSession, eventNode);
+                            sendTextMessage(playerWebSocketSession, event, eventNode, coalescable);
                         }
                     } catch (Exception e) {
                         log.error("Unable to process outgoing event {} for user {} in room {}",
@@ -480,8 +495,11 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         log.debug("Sessions list for room {} removed", code);
     }
 
-    private void sendTextMessage(PlayerWebSocketSession playerWebSocketSession, JsonNode payload) {
-        sendTextMessage(playerWebSocketSession.webSocketSession, playerWebSocketSession.lock, payload);
+    private void sendTextMessage(PlayerWebSocketSession playerWebSocketSession,
+                                 String event,
+                                 JsonNode payload,
+                                 boolean coalescable) {
+        playerWebSocketSession.send(event, payload, coalescable);
     }
 
     private void sendErrorMessage(PlayerWebSocketSession playerWebSocketSession, String message) {
@@ -492,7 +510,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         ObjectNode errorNode = mapper.createObjectNode();
         errorNode.put(EVENT_PROPERTY_NAME, ERROR);
         errorNode.set(DATA_PROPERTY_NAME, data);
-        sendTextMessage(playerWebSocketSession, errorNode);
+        sendTextMessage(playerWebSocketSession, ERROR, errorNode, false);
     }
 
     private JsonNode processEventError(Exception e) {
@@ -506,39 +524,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
         String message = e.getLocalizedMessage() != null ? e.getLocalizedMessage() : "Event processing error";
         return mapper.getNodeFactory().textNode(message);
-    }
-
-    private void sendTextMessage(WebSocketSession webSocketSession, Lock lock, JsonNode payload) {
-        if (!webSocketSession.isOpen()) {
-            log.debug("Skip sending message to closed websocket session {}", webSocketSession.getId());
-            return;
-        }
-        lock.lock();
-        try {
-            String eventJson = mapper.writeValueAsString(payload);
-            TextMessage playersMessage = new TextMessage(eventJson);
-            webSocketSession.sendMessage(playersMessage);
-        } catch (IOException | IllegalStateException | SessionLimitExceededException e) {
-            // Ошибка отправки одному клиенту не должна прерывать рассылку остальным
-            log.warn("Unable to send message to websocket session {}: {}",
-                    webSocketSession.getId(), e.getLocalizedMessage());
-            if (e instanceof SessionLimitExceededException) {
-                closeQuietly(webSocketSession);
-            }
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    private void closeQuietly(WebSocketSession webSocketSession) {
-        try {
-            if (webSocketSession.isOpen()) {
-                webSocketSession.close(CloseStatus.SESSION_NOT_RELIABLE);
-            }
-        } catch (IOException | RuntimeException e) {
-            log.debug("Unable to close websocket session {}: {}",
-                    webSocketSession.getId(), e.getLocalizedMessage());
-        }
     }
 
     private void closeExcessSessions(List<PlayerWebSocketSession> sessions,
@@ -566,7 +551,10 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
         log.trace("Cleaning websocket session resources for user {} in room {}", userId, code);
 
-        playerSessionsById.remove(session.getId());
+        PlayerWebSocketSession playerWebSocketSession = playerSessionsById.remove(session.getId());
+        if (playerWebSocketSession != null) {
+            playerWebSocketSession.close(CloseStatus.NORMAL);
+        }
 
         RoomWebSocketSessionsHolder roomWebSocketSessionsHolder = roomSessionsMap.get(code);
         if (roomWebSocketSessionsHolder == null) {
@@ -636,13 +624,14 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void closePlayerSession(PlayerWebSocketSession playerSession) {
-        try {
-            if (playerSession.webSocketSession.isOpen()) {
-                playerSession.webSocketSession.close(CloseStatus.NORMAL);
-            }
-        } catch (IOException e) {
-            log.error("Websocket session close error: {}", e.getLocalizedMessage());
-        }
+        playerSession.close(CloseStatus.NORMAL);
+    }
+
+    @Override
+    public void destroy() {
+        List<PlayerWebSocketSession> sessions = new ArrayList<>(playerSessionsById.values());
+        sessions.forEach(session -> session.close(CloseStatus.GOING_AWAY));
+        playerSessionsById.clear();
     }
 
     private static class RoomWebSocketSessionsHolder {
@@ -650,11 +639,29 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         final List<PlayerWebSocketSession> playerWebSocketSessions = new CopyOnWriteArrayList<>();
     }
 
-    @RequiredArgsConstructor
     private static class PlayerWebSocketSession {
-        final ReentrantLock lock = new ReentrantLock();
         final String userId;
         final WebSocketSession webSocketSession;
         final TokenBucket rateLimiter;
+        final SessionOutboundSender sender;
+
+        PlayerWebSocketSession(String userId,
+                               WebSocketSession webSocketSession,
+                               TokenBucket rateLimiter,
+                               ObjectMapper mapper,
+                               int sendQueueCapacity) {
+            this.userId = userId;
+            this.webSocketSession = webSocketSession;
+            this.rateLimiter = rateLimiter;
+            this.sender = new SessionOutboundSender(webSocketSession, mapper, sendQueueCapacity);
+        }
+
+        void send(String event, JsonNode payload, boolean coalescable) {
+            sender.send(event, payload, coalescable);
+        }
+
+        void close(CloseStatus status) {
+            sender.close(status);
+        }
     }
 }

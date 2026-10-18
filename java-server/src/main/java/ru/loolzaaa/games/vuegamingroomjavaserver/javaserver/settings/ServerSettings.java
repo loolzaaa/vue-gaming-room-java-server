@@ -59,7 +59,8 @@ public record ServerSettings(RoomSettings room, WebSocketSettings webSocket, Htt
             int maxSessionsPerUser,
             int rateLimitPerSecond,
             int rateLimitBurst,
-            Duration ticketTtl) {
+            Duration ticketTtl,
+            int sendQueueCapacity) {
 
         public WebSocketSettings {
             if (endpointPath == null || endpointPath.isBlank()) {
@@ -103,6 +104,25 @@ public record ServerSettings(RoomSettings room, WebSocketSettings webSocket, Htt
             if (ticketTtl.isZero() || ticketTtl.isNegative()) {
                 throw new IllegalArgumentException("ticketTtl must be positive");
             }
+            if (sendQueueCapacity < 1) {
+                throw new IllegalArgumentException("sendQueueCapacity must be positive");
+            }
+        }
+
+        public WebSocketSettings(
+                String endpointPath,
+                List<String> allowedOrigins,
+                int maxMessageSize,
+                Duration idleTimeout,
+                Duration sendTimeLimit,
+                int sendBufferSize,
+                int maxSessionsPerUser,
+                int rateLimitPerSecond,
+                int rateLimitBurst,
+                Duration ticketTtl) {
+            this(endpointPath, allowedOrigins, maxMessageSize, idleTimeout, sendTimeLimit,
+                    sendBufferSize, maxSessionsPerUser, rateLimitPerSecond, rateLimitBurst,
+                    ticketTtl, 64);
         }
 
         public static WebSocketSettings defaults() {
@@ -116,7 +136,8 @@ public record ServerSettings(RoomSettings room, WebSocketSettings webSocket, Htt
                     3,
                     30,
                     60,
-                    Duration.ofSeconds(30));
+                    Duration.ofSeconds(30),
+                    64);
         }
     }
 

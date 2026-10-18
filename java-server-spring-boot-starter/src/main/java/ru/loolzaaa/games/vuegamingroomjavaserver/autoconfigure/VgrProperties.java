@@ -51,7 +51,8 @@ public class VgrProperties {
                         webSocket.maxSessionsPerUser,
                         webSocket.rateLimitPerSecond,
                         webSocket.rateLimitBurst,
-                        webSocket.ticketTtl),
+                        webSocket.ticketTtl,
+                        webSocket.sendQueueCapacity),
                 new ServerSettings.HttpSettings(
                         http.rateLimitPerSecond,
                         http.rateLimitBurst));
@@ -127,6 +128,7 @@ public class VgrProperties {
         private int rateLimitPerSecond = 30;
         private int rateLimitBurst = 60;
         private Duration ticketTtl = Duration.ofSeconds(30);
+        private int sendQueueCapacity = 64;
 
         public String getEndpointPath() {
             return endpointPath;
@@ -206,6 +208,14 @@ public class VgrProperties {
 
         public void setTicketTtl(Duration ticketTtl) {
             this.ticketTtl = ticketTtl;
+        }
+
+        public int getSendQueueCapacity() {
+            return sendQueueCapacity;
+        }
+
+        public void setSendQueueCapacity(int sendQueueCapacity) {
+            this.sendQueueCapacity = sendQueueCapacity;
         }
     }
 

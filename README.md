@@ -50,6 +50,7 @@ All settings are optional and can be overridden in `application.yml`/`applicatio
 | `vgr.websocket.idle-timeout` | `120s` | Idle timeout for WebSocket sessions (`0` disables) |
 | `vgr.websocket.send-time-limit` | `10s` | Maximum time to send a message to one client |
 | `vgr.websocket.send-buffer-size` | `512KB` | Per-session send buffer limit |
+| `vgr.websocket.send-queue-capacity` | `64` | Per-session async outbound queue capacity |
 | `vgr.websocket.max-sessions-per-user` | `3` | Maximum active WebSocket sessions per user (oldest are closed) |
 | `vgr.websocket.rate-limit-per-second` | `30` | WebSocket messages per second per session |
 | `vgr.websocket.rate-limit-burst` | `60` | Maximum WebSocket message burst per session |
@@ -92,11 +93,17 @@ so clients can discover a custom path automatically.
 
 #### Known limitations / TODO
 
-- **Slow clients**: each session is protected by `ConcurrentWebSocketSessionDecorator`
-  (`vgr.websocket.send-time-limit` and `vgr.websocket.send-buffer-size`), and a slow client
-  is disconnected when the limit is exceeded. Sending is still synchronous. A fully asynchronous
-  per-session outbound queue with `GAME_STATE`/`UPDATE_MEMBERS` coalescing and send metrics
-  is a planned improvement for larger rooms.
+- **Slow clients / outbound sending**: each session has a bounded asynchronous outbound queue
+  (`vgr.websocket.send-queue-capacity`, default 64), served by a virtual thread.
+  `GAME_STATE` and `UPDATE_MEMBERS` are coalesced — only the latest pending state is sent.
+  A custom state-like event can be coalesced with `sendEvent(code, event, true)`;
+  custom events default to non-coalescable. If the queue overflows, the session is closed.
+  The legacy `ConcurrentWebSocketSessionDecorator` limits (`send-time-limit`, `send-buffer-size`)
+  remain as a second safety layer. Sending is independent of broadcast/event threads, but a blocked
+  `sendMessage` occupies only that session's sender; queue overflow/close is the practical timeout.
+- **Metrics (TODO)**: only logs are emitted for queue overflow, send errors and slow clients.
+  Planned metrics: active sessions, outbound queue size, coalesced messages, queue overflows,
+  send latency/errors, handshake rejects. This will be implemented as a later step.
 - **Token rotation / revocation (low priority)**: member tokens are stable for the room lifetime and are
   removed together with the member/room. Explicit rotate/revoke/logout-all endpoints are not implemented.
   For short-lived, anonymous board-game rooms this is not critical; revisit if rooms become long-lived
@@ -301,6 +308,10 @@ The state must be complete enough to allow reconnection to the game in case of a
 `Consumer<JsonNode> sendMessage` - this consumer allows you to send a message to the player from whom the incoming event came.
 
 `Consumer<String> callbackEvent` - this consumer allows you to send an outgoing event to ALL players after the incoming event has been processed.
+
+Both callback paths send non-coalescable events by default. `GAME_STATE` and `UPDATE_MEMBERS` are coalesced automatically.
+If a custom event represents only the latest state, inject `GameWebSocketHandler` and use
+`sendEvent(code, event, true)` to coalesce pending messages with the same event name.
 
 If you need to indicate an error to the player during incoming event data validation, 
 you can throw any exception, it will be handled by the implemented `WebSocketEventProcessor#processEventError(Exception e)` method.
