@@ -29,7 +29,8 @@ class GameControllerTest {
                 ServerSettings.RoomSettings.defaults(),
                 new ServerSettings.WebSocketSettings(
                         "/custom-ws", List.of("*"), 1024,
-                        Duration.ofSeconds(30), Duration.ofSeconds(5), 2048));
+                        Duration.ofSeconds(30), Duration.ofSeconds(5), 2048,
+                        3, 30, 60, Duration.ofSeconds(30)));
         GameController gameController = new GameController(gameService, settings);
 
         assertThat(gameController.getGameInfo().getWsEndpoint()).isEqualTo("/custom-ws");

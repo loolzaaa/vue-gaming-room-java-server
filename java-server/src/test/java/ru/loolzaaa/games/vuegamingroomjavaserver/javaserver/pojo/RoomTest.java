@@ -28,10 +28,9 @@ class RoomTest {
     @Test
     void shouldInitializeRoomState() {
         LocalDateTime before = LocalDateTime.now();
-        Room<TestGame> room = new Room<>("ABCD", "ws-token", new TestGame());
+        Room<TestGame> room = new Room<>("ABCD", new TestGame());
 
         assertThat(room.getCode()).isEqualTo("ABCD");
-        assertThat(room.getWebSocketToken()).isEqualTo("ws-token");
         assertThat(room.getMembers()).isEmpty();
         assertThat(room.isGameStarted()).isFalse();
         assertThat(room.getLastActivity()).isAfterOrEqualTo(before);
@@ -39,8 +38,8 @@ class RoomTest {
 
     @Test
     void shouldBeEqualByCode() {
-        Room<TestGame> first = new Room<>("ABCD", "token-1", new TestGame());
-        Room<TestGame> second = new Room<>("ABCD", "token-2", new TestGame("OTHER", 2, 4));
+        Room<TestGame> first = new Room<>("ABCD", new TestGame());
+        Room<TestGame> second = new Room<>("ABCD", new TestGame("OTHER", 2, 4));
 
         assertThat(first).isEqualTo(second);
         assertThat(first).hasSameHashCodeAs(second);
@@ -64,7 +63,7 @@ class RoomTest {
     }
 
     private Room<TestGame> room(String code) {
-        return new Room<>(code, "ws-token", new TestGame());
+        return new Room<>(code, new TestGame());
     }
 
     private Member member(String userId, String nickname) {

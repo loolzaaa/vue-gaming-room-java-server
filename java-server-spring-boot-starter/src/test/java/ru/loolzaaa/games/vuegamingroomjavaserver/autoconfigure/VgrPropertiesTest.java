@@ -29,6 +29,10 @@ class VgrPropertiesTest {
         assertThat(properties.getWebSocket().getIdleTimeout()).isEqualTo(Duration.ofSeconds(120));
         assertThat(properties.getWebSocket().getSendTimeLimit()).isEqualTo(Duration.ofSeconds(10));
         assertThat(properties.getWebSocket().getSendBufferSize().toBytes()).isEqualTo(512 * 1024);
+        assertThat(properties.getWebSocket().getMaxSessionsPerUser()).isEqualTo(3);
+        assertThat(properties.getWebSocket().getRateLimitPerSecond()).isEqualTo(30);
+        assertThat(properties.getWebSocket().getRateLimitBurst()).isEqualTo(60);
+        assertThat(properties.getWebSocket().getTicketTtl()).isEqualTo(Duration.ofSeconds(30));
     }
 
     @Test
@@ -44,7 +48,11 @@ class VgrPropertiesTest {
                 Map.entry("vgr.websocket.max-message-size", "32KB"),
                 Map.entry("vgr.websocket.idle-timeout", "90s"),
                 Map.entry("vgr.websocket.send-time-limit", "5s"),
-                Map.entry("vgr.websocket.send-buffer-size", "256KB")));
+                Map.entry("vgr.websocket.send-buffer-size", "256KB"),
+                Map.entry("vgr.websocket.max-sessions-per-user", "5"),
+                Map.entry("vgr.websocket.rate-limit-per-second", "10"),
+                Map.entry("vgr.websocket.rate-limit-burst", "20"),
+                Map.entry("vgr.websocket.ticket-ttl", "45s")));
 
         ServerSettings settings = properties.toServerSettings();
 
@@ -58,6 +66,10 @@ class VgrPropertiesTest {
         assertThat(settings.webSocket().idleTimeout()).isEqualTo(Duration.ofSeconds(90));
         assertThat(settings.webSocket().sendTimeLimit()).isEqualTo(Duration.ofSeconds(5));
         assertThat(settings.webSocket().sendBufferSize()).isEqualTo(256 * 1024);
+        assertThat(settings.webSocket().maxSessionsPerUser()).isEqualTo(5);
+        assertThat(settings.webSocket().rateLimitPerSecond()).isEqualTo(10);
+        assertThat(settings.webSocket().rateLimitBurst()).isEqualTo(20);
+        assertThat(settings.webSocket().ticketTtl()).isEqualTo(Duration.ofSeconds(45));
     }
 
     @Test

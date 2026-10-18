@@ -62,7 +62,6 @@ class RoomServiceTest {
         Room<?> room = room(roomDTO.getCode());
         assertThat(room).isNotNull();
         assertThat(room.getCode()).isEqualTo(roomDTO.getCode());
-        assertThat(room.getWebSocketToken()).isEqualTo(roomDTO.getWsToken());
         assertThat(room.getGame()).isInstanceOf(TestGame.class);
         assertThat(room.getGame().getMinPlayers()).isEqualTo(1);
         assertThat(room.getGame().getMaxPlayers()).isEqualTo(2);
@@ -72,6 +71,7 @@ class RoomServiceTest {
 
         Member admin = room.getMembers().getFirst();
         assertThat(admin.getUserId()).isEqualTo(ADMIN_ID);
+        assertThat(admin.getWsToken()).isEqualTo(roomDTO.getWsToken());
         assertThat(admin.getNickname()).isEqualTo("Alice");
         assertThat(admin.isAdmin()).isTrue();
         assertThat(admin.isSpectator()).isTrue();
@@ -138,7 +138,7 @@ class RoomServiceTest {
         RoomDTO joined = roomService.joinToRoom(roomDTO.getCode(), "user-1", "  Bob  ");
 
         assertThat(joined.getCode()).isEqualTo(roomDTO.getCode());
-        assertThat(joined.getWsToken()).isEqualTo(roomDTO.getWsToken());
+        assertThat(joined.getWsToken()).isNotBlank().isNotEqualTo(roomDTO.getWsToken());
         assertThat(joined.getUserId()).isEqualTo("user-1");
         assertThat(joined.isGameStarted()).isFalse();
         assertThat(member(roomDTO.getCode(), "user-1").getNickname()).isEqualTo("Bob");
@@ -150,12 +150,14 @@ class RoomServiceTest {
     @Test
     void shouldReconnectExistingMemberAndUpdateNickname() {
         RoomDTO roomDTO = createRoom("admin");
-        roomService.joinToRoom(roomDTO.getCode(), "user-1", "Bob");
+        RoomDTO joined = roomService.joinToRoom(roomDTO.getCode(), "user-1", "Bob");
         String color = member(roomDTO.getCode(), "user-1").getColor();
 
-        RoomDTO rejoined = roomService.joinToRoom(roomDTO.getCode(), "user-1", "  Bobby  ");
+        RoomDTO rejoined = roomService.joinToRoom(
+                roomDTO.getCode(), "user-1", "  Bobby  ", joined.getWsToken());
 
         assertThat(rejoined.getUserId()).isEqualTo("user-1");
+        assertThat(rejoined.getWsToken()).isEqualTo(joined.getWsToken());
         assertThat(room(roomDTO.getCode()).getMembers()).hasSize(2);
         assertThat(member(roomDTO.getCode(), "user-1").getNickname()).isEqualTo("Bobby");
         assertThat(member(roomDTO.getCode(), "user-1").getColor()).isEqualTo(color);
@@ -163,12 +165,53 @@ class RoomServiceTest {
     }
 
     @Test
+    void shouldRejectReconnectWithInvalidMemberToken() {
+        RoomDTO roomDTO = createRoom("admin");
+        roomService.joinToRoom(roomDTO.getCode(), "user-1", "Bob");
+
+        assertThatThrownBy(() -> roomService.joinToRoom(
+                roomDTO.getCode(), "user-1", "Bob", "wrong-token"))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("Invalid member token");
+    }
+
+    @Test
+    void shouldIssueUniqueMemberTokens() {
+        RoomDTO adminRoom = createRoom("admin");
+        RoomDTO joined = roomService.joinToRoom(adminRoom.getCode(), "user-1", "Bob");
+
+        assertThat(joined.getWsToken()).isNotBlank();
+        assertThat(joined.getWsToken()).isNotEqualTo(adminRoom.getWsToken());
+        assertThat(member(adminRoom.getCode(), "user-1").getWsToken())
+                .isEqualTo(joined.getWsToken());
+    }
+
+    @Test
+    void shouldValidateMemberToken() {
+        RoomDTO roomDTO = createRoom("admin");
+
+        assertThatCode(() -> roomService.validateMemberToken(
+                roomDTO.getCode(), ADMIN_ID, roomDTO.getWsToken()))
+                .doesNotThrowAnyException();
+        assertThatThrownBy(() -> roomService.validateMemberToken(
+                roomDTO.getCode(), ADMIN_ID, "wrong-token"))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("Invalid member token");
+        assertThatThrownBy(() -> roomService.validateMemberToken(
+                roomDTO.getCode(), "unknown", roomDTO.getWsToken()))
+                .isInstanceOf(RoomException.class)
+                .hasMessage("Invalid member token");
+    }
+
+    @Test
     void shouldAllowExistingMemberToReconnectAfterGameStarted() {
         RoomDTO roomDTO = createStartedRoom();
 
-        RoomDTO rejoined = roomService.joinToRoom(roomDTO.getCode(), ADMIN_ID, "admin");
+        RoomDTO rejoined = roomService.joinToRoom(
+                roomDTO.getCode(), ADMIN_ID, "admin", roomDTO.getWsToken());
 
         assertThat(rejoined.getCode()).isEqualTo(roomDTO.getCode());
+        assertThat(rejoined.getWsToken()).isEqualTo(roomDTO.getWsToken());
         assertThat(rejoined.isGameStarted()).isTrue();
         assertThat(room(roomDTO.getCode()).getMembers()).hasSize(1);
     }
@@ -198,7 +241,9 @@ class RoomServiceTest {
         RoomDTO roomDTO = createRoom("admin");
         fillRoomToMaxMembers(roomDTO.getCode());
 
-        assertThatCode(() -> roomService.joinToRoom(roomDTO.getCode(), "user-1", "member-1"))
+        assertThatCode(() -> roomService.joinToRoom(
+                roomDTO.getCode(), "user-1", "member-1",
+                member(roomDTO.getCode(), "user-1").getWsToken()))
                 .doesNotThrowAnyException();
         assertThat(room(roomDTO.getCode()).getMembers()).hasSize(200);
     }

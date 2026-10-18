@@ -2,6 +2,7 @@ package ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.websocket.CloseReason;
 import jakarta.websocket.RemoteEndpoint;
 import org.apache.tomcat.websocket.WsSession;
 import org.junit.jupiter.api.Test;
@@ -28,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -133,7 +135,8 @@ class GameWebSocketHandlerTests {
                 ServerSettings.RoomSettings.defaults(),
                 new ServerSettings.WebSocketSettings(
                         "/game-ws", List.of("*"), 64 * 1024,
-                        Duration.ofSeconds(30), Duration.ofSeconds(5), 128 * 1024));
+                        Duration.ofSeconds(30), Duration.ofSeconds(5), 128 * 1024,
+                        3, 30, 60, Duration.ofSeconds(30)));
         GameWebSocketHandler handler = new GameWebSocketHandler(
                 mapper, roomService, mock(WebSocketEventProcessor.class), settings);
 
@@ -142,9 +145,46 @@ class GameWebSocketHandlerTests {
         verify(session.nativeSession()).setMaxIdleTimeout(30_000L);
     }
 
+    @Test
+    void shouldCloseSessionWhenRateLimitExceeded() throws Exception {
+        ServerSettings settings = settingsWith(3, 1, 1);
+        GameWebSocketHandler handler = new GameWebSocketHandler(
+                mapper, roomService, mock(WebSocketEventProcessor.class), settings);
+        RoomDTO roomDTO = createRoom("ws-rate-limit", handler);
+        TestSession session = connect(roomDTO, handler);
+
+        handler.handleTextMessage(session.webSocketSession, new TextMessage("{\"event\":\"PING\"}"));
+        handler.handleTextMessage(session.webSocketSession, new TextMessage("{\"event\":\"PING\"}"));
+
+        assertEquals("ERROR", lastMessage(session).get("event").asText());
+    }
+
+    @Test
+    void shouldCloseOldestSessionWhenPerUserLimitExceeded() throws Exception {
+        ServerSettings settings = settingsWith(1, 30, 60);
+        GameWebSocketHandler handler = new GameWebSocketHandler(
+                mapper, roomService, mock(WebSocketEventProcessor.class), settings);
+        RoomDTO roomDTO = createRoom("ws-session-limit", handler);
+
+        TestSession first = connect(roomDTO, handler);
+        connect(roomDTO, handler);
+
+        verify(first.nativeSession(), atLeastOnce()).close(any(CloseReason.class));
+    }
+
+    private ServerSettings settingsWith(int maxSessionsPerUser, int ratePerSecond, int rateBurst) {
+        return new ServerSettings(
+                ServerSettings.RoomSettings.defaults(),
+                new ServerSettings.WebSocketSettings(
+                        "/game-ws", List.of("*"), 64 * 1024,
+                        Duration.ofSeconds(30), Duration.ofSeconds(5), 128 * 1024,
+                        maxSessionsPerUser, ratePerSecond, rateBurst, Duration.ofSeconds(30)));
+    }
+
     private RoomDTO createRoom(String userId, GameWebSocketHandler handler) {
         RoomDTO roomDTO = roomService.createRoom(userId, "admin");
-        handler.createNewSessionsListForRoom(roomDTO.getWsToken(), roomDTO.getCode());
+        handler.createNewSessionsListForRoom(roomDTO.getCode());
+        handler.registerMemberToken(roomDTO.getCode(), roomDTO.getUserId(), roomDTO.getWsToken());
         return roomDTO;
     }
 
@@ -166,7 +206,8 @@ class GameWebSocketHandlerTests {
         }).when(remote).sendText(anyString());
 
         webSocketSession.initializeNativeSession(wsSession);
-        webSocketSession.getAttributes().put("token", roomDTO.getUserId() + ":" + roomDTO.getWsToken());
+        webSocketSession.getAttributes().put(TokenHandshakeInterceptor.CODE_ATTRIBUTE, roomDTO.getCode());
+        webSocketSession.getAttributes().put(TokenHandshakeInterceptor.USER_ID_ATTRIBUTE, roomDTO.getUserId());
         handler.afterConnectionEstablished(webSocketSession);
         sentMessages.clear();
 

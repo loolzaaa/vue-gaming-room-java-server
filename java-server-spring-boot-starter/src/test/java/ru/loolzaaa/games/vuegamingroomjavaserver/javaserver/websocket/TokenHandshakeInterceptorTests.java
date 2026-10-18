@@ -14,26 +14,45 @@ import static org.mockito.Mockito.when;
 
 class TokenHandshakeInterceptorTests {
 
-    private final TokenHandshakeInterceptor interceptor = new TokenHandshakeInterceptor();
+    private final GameWebSocketHandler handler = mock(GameWebSocketHandler.class);
+    private final TokenHandshakeInterceptor interceptor = new TokenHandshakeInterceptor(handler);
 
     @Test
-    void shouldExtractAndDecodeToken() {
-        Map<String, Object> attributes = handshake("http://localhost/game-ws?token=user%3Aroom-token");
+    void shouldAcceptValidTicket() {
+        when(handler.consumeWsTicket("ticket-1"))
+                .thenReturn(new GameWebSocketHandler.MemberToken("ABCD", "user-1"));
 
-        assertEquals("user:room-token", attributes.get("token"));
+        Map<String, Object> attributes = handshake("http://localhost/game-ws?ticket=ticket-1");
+
+        assertEquals("ABCD", attributes.get(TokenHandshakeInterceptor.CODE_ATTRIBUTE));
+        assertEquals("user-1", attributes.get(TokenHandshakeInterceptor.USER_ID_ATTRIBUTE));
     }
 
     @Test
-    void shouldRejectMissingToken() {
+    void shouldAcceptValidLegacyToken() {
+        when(handler.resolveMemberToken("secret"))
+                .thenReturn(new GameWebSocketHandler.MemberToken("ABCD", "user-1"));
+
+        Map<String, Object> attributes = handshake("http://localhost/game-ws?token=user-1%3Asecret");
+
+        assertEquals("ABCD", attributes.get(TokenHandshakeInterceptor.CODE_ATTRIBUTE));
+        assertEquals("user-1", attributes.get(TokenHandshakeInterceptor.USER_ID_ATTRIBUTE));
+    }
+
+    @Test
+    void shouldRejectMissingOrInvalidCredentials() {
         assertTrue(handshake("http://localhost/game-ws").isEmpty());
-        assertTrue(handshake("http://localhost/game-ws?token=").isEmpty());
-        assertTrue(handshake("http://localhost/game-ws?tokenExtra=user%3Atoken").isEmpty());
+        assertTrue(handshake("http://localhost/game-ws?ticket=unknown").isEmpty());
+        assertTrue(handshake("http://localhost/game-ws?token=user-1").isEmpty());
+        assertTrue(handshake("http://localhost/game-ws?token=user-1%3Aunknown").isEmpty());
     }
 
     @Test
-    void shouldRejectMalformedToken() {
-        assertTrue(handshake("http://localhost/game-ws?token=user").isEmpty());
-        assertTrue(handshake("http://localhost/game-ws?token=%3Aroom").isEmpty());
+    void shouldRejectTokenForAnotherUser() {
+        when(handler.resolveMemberToken("secret"))
+                .thenReturn(new GameWebSocketHandler.MemberToken("ABCD", "user-2"));
+
+        assertTrue(handshake("http://localhost/game-ws?token=user-1%3Asecret").isEmpty());
     }
 
     private Map<String, Object> handshake(String url) {

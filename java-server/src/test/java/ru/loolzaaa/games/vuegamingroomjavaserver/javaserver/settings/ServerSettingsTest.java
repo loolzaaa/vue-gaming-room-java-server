@@ -23,13 +23,18 @@ class ServerSettingsTest {
         assertThat(settings.webSocket().idleTimeout()).isEqualTo(Duration.ofSeconds(120));
         assertThat(settings.webSocket().sendTimeLimit()).isEqualTo(Duration.ofSeconds(10));
         assertThat(settings.webSocket().sendBufferSize()).isEqualTo(512 * 1024);
+        assertThat(settings.webSocket().maxSessionsPerUser()).isEqualTo(3);
+        assertThat(settings.webSocket().rateLimitPerSecond()).isEqualTo(30);
+        assertThat(settings.webSocket().rateLimitBurst()).isEqualTo(60);
+        assertThat(settings.webSocket().ticketTtl()).isEqualTo(Duration.ofSeconds(30));
     }
 
     @Test
     void shouldNormalizeEndpointPath() {
         ServerSettings.WebSocketSettings settings = new ServerSettings.WebSocketSettings(
                 "custom-ws", List.of("https://example.com"), 1024,
-                Duration.ofSeconds(30), Duration.ofSeconds(5), 2048);
+                Duration.ofSeconds(30), Duration.ofSeconds(5), 2048,
+                3, 30, 60, Duration.ofSeconds(30));
 
         assertThat(settings.endpointPath()).isEqualTo("/custom-ws");
     }
@@ -47,22 +52,44 @@ class ServerSettingsTest {
     @Test
     void shouldRejectInvalidWebSocketSettings() {
         assertThatThrownBy(() -> new ServerSettings.WebSocketSettings(
-                " ", List.of("*"), 1024, Duration.ofSeconds(1), Duration.ofSeconds(1), 1024))
+                " ", List.of("*"), 1024, Duration.ofSeconds(1), Duration.ofSeconds(1), 1024,
+                3, 30, 60, Duration.ofSeconds(30)))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new ServerSettings.WebSocketSettings(
-                "/ws", List.of(), 1024, Duration.ofSeconds(1), Duration.ofSeconds(1), 1024))
+                "/ws", List.of(), 1024, Duration.ofSeconds(1), Duration.ofSeconds(1), 1024,
+                3, 30, 60, Duration.ofSeconds(30)))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new ServerSettings.WebSocketSettings(
-                "/ws", List.of("*"), 0, Duration.ofSeconds(1), Duration.ofSeconds(1), 1024))
+                "/ws", List.of("*"), 0, Duration.ofSeconds(1), Duration.ofSeconds(1), 1024,
+                3, 30, 60, Duration.ofSeconds(30)))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new ServerSettings.WebSocketSettings(
-                "/ws", List.of("*"), 1024, Duration.ofSeconds(-1), Duration.ofSeconds(1), 1024))
+                "/ws", List.of("*"), 1024, Duration.ofSeconds(-1), Duration.ofSeconds(1), 1024,
+                3, 30, 60, Duration.ofSeconds(30)))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new ServerSettings.WebSocketSettings(
-                "/ws", List.of("*"), 1024, Duration.ofSeconds(1), Duration.ZERO, 1024))
+                "/ws", List.of("*"), 1024, Duration.ofSeconds(1), Duration.ZERO, 1024,
+                3, 30, 60, Duration.ofSeconds(30)))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new ServerSettings.WebSocketSettings(
-                "/ws", List.of("*"), 1024, Duration.ofSeconds(1), Duration.ofSeconds(1), 0))
+                "/ws", List.of("*"), 1024, Duration.ofSeconds(1), Duration.ofSeconds(1), 0,
+                3, 30, 60, Duration.ofSeconds(30)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ServerSettings.WebSocketSettings(
+                "/ws", List.of("*"), 1024, Duration.ofSeconds(1), Duration.ofSeconds(1), 1024,
+                0, 30, 60, Duration.ofSeconds(30)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ServerSettings.WebSocketSettings(
+                "/ws", List.of("*"), 1024, Duration.ofSeconds(1), Duration.ofSeconds(1), 1024,
+                3, 0, 60, Duration.ofSeconds(30)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ServerSettings.WebSocketSettings(
+                "/ws", List.of("*"), 1024, Duration.ofSeconds(1), Duration.ofSeconds(1), 1024,
+                3, 30, 0, Duration.ofSeconds(30)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ServerSettings.WebSocketSettings(
+                "/ws", List.of("*"), 1024, Duration.ofSeconds(1), Duration.ofSeconds(1), 1024,
+                3, 30, 60, Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }
