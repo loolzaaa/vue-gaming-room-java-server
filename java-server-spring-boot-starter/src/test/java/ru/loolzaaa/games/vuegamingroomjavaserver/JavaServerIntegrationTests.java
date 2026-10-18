@@ -11,6 +11,7 @@ import org.springframework.test.context.junit.jupiter.web.SpringJUnitWebConfig;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.adapter.standard.StandardWebSocketSession;
 import ru.loolzaaa.games.vuegamingroomjavaserver.autoconfigure.JavaServerAutoConfiguration;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.controller.RoomController;
@@ -18,6 +19,9 @@ import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.dto.RoomDTO;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.RoomService;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.GameWebSocketHandler;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -94,5 +98,101 @@ class JavaServerIntegrationTests {
                         .param("nickname", "second"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON));
+    }
+
+    @Test
+    void shouldDenyJoinWithSameNickname() throws Exception {
+        RoomDTO roomDTO = createRoom("duplicate-nickname-admin", "admin");
+
+        mockMvc.perform(post("/room/join/{code}", roomDTO.getCode())
+                        .param("userId", "duplicate-nickname-member")
+                        .param("nickname", "admin"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldAllowMemberToKeepOrChangeOwnNickname() throws Exception {
+        RoomDTO roomDTO = createRoom("own-nickname-user", "admin");
+
+        mockMvc.perform(post("/room/{code}/{userId}/nickname", roomDTO.getCode(), roomDTO.getUserId())
+                        .param("newNickname", "admin"))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(post("/room/join/{code}", roomDTO.getCode())
+                        .param("userId", "own-nickname-member")
+                        .param("nickname", "member"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/room/{code}/{userId}/nickname", roomDTO.getCode(), "own-nickname-member")
+                        .param("newNickname", "admin"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldKeepMemberUntilLastSessionClosed() throws Exception {
+        RoomDTO adminRoomDTO = createRoom("multi-session-admin", "admin");
+        RoomDTO roomDTO = joinRoom(adminRoomDTO.getCode(), "multi-session-user", "multi");
+
+        WebSocketSession session1 = connect(roomDTO);
+        WebSocketSession session2 = connect(roomDTO);
+
+        gameWebSocketHandler.afterConnectionClosed(session1, CloseStatus.NORMAL);
+
+        assertNotNull(roomService.getRooms().get(roomDTO.getCode()).getMemberByUserId(roomDTO.getUserId()));
+
+        gameWebSocketHandler.afterConnectionClosed(session2, CloseStatus.NORMAL);
+
+        assertNull(roomService.getRooms().get(roomDTO.getCode()).getMemberByUserId(roomDTO.getUserId()));
+    }
+
+    @Test
+    void shouldNotRestartGameForNonAdmin() throws Exception {
+        RoomDTO roomDTO = createRoom("restart-admin", "admin");
+
+        mockMvc.perform(post("/room/{code}/{userId}/player", roomDTO.getCode(), roomDTO.getUserId())
+                        .param("newStatus", "true"))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(post("/room/{code}/start", roomDTO.getCode())
+                        .param("userId", roomDTO.getUserId())
+                        .param("forceStart", "true"))
+                .andExpect(status().isNoContent());
+
+        assertTrue(roomService.getRooms().get(roomDTO.getCode()).isGameStarted());
+
+        mockMvc.perform(post("/room/{code}/restart", roomDTO.getCode())
+                        .param("userId", "not-an-admin"))
+                .andExpect(status().isBadRequest());
+
+        assertTrue(roomService.getRooms().get(roomDTO.getCode()).isGameStarted());
+    }
+
+    private RoomDTO createRoom(String userId, String nickname) throws Exception {
+        MvcResult mvcResult = mockMvc.perform(post("/room/create")
+                        .param("userId", userId)
+                        .param("nickname", nickname))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andReturn();
+        return mapper.readValue(mvcResult.getResponse().getContentAsByteArray(), RoomDTO.class);
+    }
+
+    private RoomDTO joinRoom(String code, String userId, String nickname) throws Exception {
+        MvcResult mvcResult = mockMvc.perform(post("/room/join/{code}", code)
+                        .param("userId", userId)
+                        .param("nickname", nickname))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andReturn();
+        return mapper.readValue(mvcResult.getResponse().getContentAsByteArray(), RoomDTO.class);
+    }
+
+    private WebSocketSession connect(RoomDTO roomDTO) throws Exception {
+        StandardWebSocketSession webSocketSession = new StandardWebSocketSession(null, null, null, null);
+        WsSession mockWsSession = mock(WsSession.class);
+        when(mockWsSession.getBasicRemote()).thenReturn(mock(RemoteEndpoint.Basic.class));
+        webSocketSession.initializeNativeSession(mockWsSession);
+        webSocketSession.getAttributes().put("token", roomDTO.getUserId() + ":" + roomDTO.getWsToken());
+        gameWebSocketHandler.afterConnectionEstablished(webSocketSession);
+        return webSocketSession;
     }
 }
