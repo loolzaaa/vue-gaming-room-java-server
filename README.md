@@ -33,6 +33,35 @@ After all players are ready and the game starts, observers are removed from the 
 </dependency>
 ```
 
+#### Configuration
+
+All settings are optional and can be overridden in `application.yml`/`application.properties`:
+
+| Property | Default | Description |
+|---|---|---|
+| `vgr.room.max-members` | `200` | Maximum number of room members |
+| `vgr.room.inactive-timeout` | `60m` | Inactive room cleanup timeout |
+| `vgr.room.clean-initial-delay-ms` | `10000` | Delay before the first cleanup run |
+| `vgr.room.clean-interval-ms` | `60000` | Interval between cleanup runs |
+| `vgr.room.max-nickname-length` | `32` | Maximum nickname length in code points |
+| `vgr.websocket.endpoint-path` | `/game-ws` | WebSocket endpoint path |
+| `vgr.websocket.allowed-origins` | `*` | Allowed WebSocket origin patterns |
+| `vgr.websocket.max-message-size` | `64KB` | Maximum incoming message size |
+| `vgr.websocket.idle-timeout` | `120s` | Idle timeout for WebSocket sessions (`0` disables) |
+| `vgr.websocket.send-time-limit` | `10s` | Maximum time to send a message to one client |
+| `vgr.websocket.send-buffer-size` | `512KB` | Per-session send buffer limit |
+
+The WebSocket endpoint path is also returned by `GET /game/info` as `wsEndpoint`,
+so clients can discover a custom path automatically.
+
+#### Validation rules
+
+- Nicknames are trimmed, normalized to Unicode NFC, limited by `vgr.room.max-nickname-length`,
+  cannot contain control characters, and must be unique case-insensitively within a room.
+- Member colors must use the `#RRGGBB` format; the server normalizes them to lowercase.
+- Room codes consist of 4 uppercase Latin letters.
+- User ids must be non-blank, at most 64 characters, and must not contain `:` or control characters.
+
 #### Create game entities
 
 First, you need to create a player entity. The best way to do this is by inheriting from an `AbstractPlayer`.

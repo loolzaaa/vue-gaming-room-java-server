@@ -4,18 +4,23 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import jakarta.websocket.Session;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.adapter.NativeWebSocketSession;
+import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
+import org.springframework.web.socket.handler.SessionLimitExceededException;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.exception.RoomException;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Game;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Member;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Room;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.RoomService;
+import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.settings.ServerSettings;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -31,7 +36,6 @@ import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.Web
 import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.WebSocketEventProcessor.EVENT_PROPERTY_NAME;
 
 
-@RequiredArgsConstructor
 public class GameWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GameWebSocketHandler.class);
@@ -46,8 +50,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     private static final String PING = "PING";
     private static final String PONG = "PONG";
 
-    private static final int MAX_MESSAGE_SIZE = 64 * 1024;
-
     private static final String CODE_ATTRIBUTE = "code";
     private static final String USER_ID_ATTRIBUTE = "userId";
     private static final String CODE_PROPERTY_NAME = "code";
@@ -58,18 +60,46 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     private final Map<String, RoomWebSocketSessionsHolder> roomSessionsMap = new ConcurrentHashMap<>();
     private final Lock roomSessionsLock = new ReentrantLock();
 
-    private final Map<String, Lock> sessionLockMap = new ConcurrentHashMap<>();
+    private final Map<String, PlayerWebSocketSession> playerSessionsById = new ConcurrentHashMap<>();
 
     private final ObjectMapper mapper;
-
     private final RoomService roomService;
-
     private final WebSocketEventProcessor webSocketEventProcessor;
+
+    private final int maxMessageSize;
+    private final long idleTimeoutMs;
+    private final int sendTimeLimitMs;
+    private final int sendBufferSize;
+
+    public GameWebSocketHandler(ObjectMapper mapper,
+                                RoomService roomService,
+                                WebSocketEventProcessor webSocketEventProcessor) {
+        this(mapper, roomService, webSocketEventProcessor, ServerSettings.defaults());
+    }
+
+    public GameWebSocketHandler(ObjectMapper mapper,
+                                RoomService roomService,
+                                WebSocketEventProcessor webSocketEventProcessor,
+                                ServerSettings settings) {
+        this.mapper = mapper;
+        this.roomService = roomService;
+        this.webSocketEventProcessor = webSocketEventProcessor;
+        this.maxMessageSize = settings.webSocket().maxMessageSize();
+        this.idleTimeoutMs = settings.webSocket().idleTimeout().toMillis();
+        this.sendTimeLimitMs = (int) settings.webSocket().sendTimeLimit().toMillis();
+        this.sendBufferSize = settings.webSocket().sendBufferSize();
+    }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
-        session.setTextMessageSizeLimit(MAX_MESSAGE_SIZE);
-        session.setBinaryMessageSizeLimit(MAX_MESSAGE_SIZE);
+        session.setTextMessageSizeLimit(maxMessageSize);
+        session.setBinaryMessageSizeLimit(maxMessageSize);
+        if (idleTimeoutMs > 0 && session instanceof NativeWebSocketSession nativeSession) {
+            Session nativeWsSession = nativeSession.getNativeSession(Session.class);
+            if (nativeWsSession != null) {
+                nativeWsSession.setMaxIdleTimeout(idleTimeoutMs);
+            }
+        }
 
         String token = (String) session.getAttributes().get(TokenHandshakeInterceptor.TOKEN_ATTRIBUTE);
         String[] tokenParts = token == null ? new String[0] : token.split(":");
@@ -97,9 +127,11 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         List<PlayerWebSocketSession> playerWebSocketSessions = roomWebSocketSessionsHolder.playerWebSocketSessions;
-        PlayerWebSocketSession playerWebSocketSession = new PlayerWebSocketSession(userId, session);
+        WebSocketSession concurrentSession = new ConcurrentWebSocketSessionDecorator(
+                session, sendTimeLimitMs, sendBufferSize);
+        PlayerWebSocketSession playerWebSocketSession = new PlayerWebSocketSession(userId, concurrentSession);
         playerWebSocketSessions.add(playerWebSocketSession);
-        sessionLockMap.put(session.getId(), playerWebSocketSession.lock);
+        playerSessionsById.put(session.getId(), playerWebSocketSession);
         log.info("Websocket connection established for user {} in room {}", userId, code);
 
         // Обновить состояние всех членов комнаты из-за вновь подключившегося
@@ -115,11 +147,11 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 if (gameStateData != null) {
                     gameState.set(DATA_PROPERTY_NAME, gameStateData);
                 }
-                sendTextMessage(session, playerWebSocketSession.lock, gameState);
+                sendTextMessage(playerWebSocketSession, gameState);
                 log.debug("Send game state for user id {} in room {}: {}", userId, code, gameState);
             } catch (Exception e) {
                 log.error("Unable to create game state for user {} in room {}", userId, code, e);
-                sendErrorMessage(session, playerWebSocketSession.lock, "Unable to create game state");
+                sendErrorMessage(playerWebSocketSession, "Unable to create game state");
             }
         }
     }
@@ -128,9 +160,9 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
         log.debug("Incoming message: {}", message);
 
-        Lock sessionLock = sessionLockMap.get(session.getId());
-        if (sessionLock == null) {
-            log.warn("No lock found for websocket session {}", session.getId());
+        PlayerWebSocketSession playerWebSocketSession = playerSessionsById.get(session.getId());
+        if (playerWebSocketSession == null) {
+            log.warn("No registered websocket session found for {}", session.getId());
             return;
         }
 
@@ -139,26 +171,26 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         try {
             JsonNode parsedMessage = mapper.readTree(message.getPayload());
             if (!parsedMessage.isObject()) {
-                sendErrorMessage(session, sessionLock, "Message must be a JSON object");
+                sendErrorMessage(playerWebSocketSession, "Message must be a JSON object");
                 return;
             }
             messageNode = (ObjectNode) parsedMessage;
             JsonNode eventNode = messageNode.get(EVENT_PROPERTY_NAME);
             if (eventNode == null || !eventNode.isTextual() || eventNode.asText().isBlank()) {
-                sendErrorMessage(session, sessionLock, "Event name is missing");
+                sendErrorMessage(playerWebSocketSession, "Event name is missing");
                 return;
             }
             event = eventNode.asText();
         } catch (JsonProcessingException e) {
             log.debug("Unable to parse incoming message from session {}: {}",
                     session.getId(), e.getLocalizedMessage());
-            sendErrorMessage(session, sessionLock, "Malformed JSON message");
+            sendErrorMessage(playerWebSocketSession, "Malformed JSON message");
             return;
         }
 
         if (PING.equals(event)) {
             messageNode.put(EVENT_PROPERTY_NAME, PONG);
-            sendTextMessage(session, sessionLock, messageNode);
+            sendTextMessage(playerWebSocketSession, messageNode);
             return;
         }
 
@@ -166,31 +198,31 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         String code = (String) session.getAttributes().get(CODE_ATTRIBUTE);
         String userId = (String) session.getAttributes().get(USER_ID_ATTRIBUTE);
         if (code == null || userId == null) {
-            sendErrorMessage(session, sessionLock, "Session is not bound to a room");
+            sendErrorMessage(playerWebSocketSession, "Session is not bound to a room");
             return;
         }
 
         JsonNode dataNode = messageNode.get(DATA_PROPERTY_NAME);
         if (dataNode == null || !dataNode.isObject()) {
-            sendErrorMessage(session, sessionLock, "Message data is missing");
+            sendErrorMessage(playerWebSocketSession, "Message data is missing");
             return;
         }
         // Если клиент передал код комнаты, он должен совпадать с комнатой сессии
         JsonNode codeNode = dataNode.get(CODE_PROPERTY_NAME);
         if (codeNode != null && (!codeNode.isTextual() || !code.equals(codeNode.asText()))) {
-            sendErrorMessage(session, sessionLock, "Room code does not match the session");
+            sendErrorMessage(playerWebSocketSession, "Room code does not match the session");
             return;
         }
 
         Room<?> room = roomService.getRooms().get(code);
         RoomWebSocketSessionsHolder roomWebSocketSessionsHolder = roomSessionsMap.get(code);
         if (room == null || roomWebSocketSessionsHolder == null) {
-            sendErrorMessage(session, sessionLock, "The room doesn't exist");
+            sendErrorMessage(playerWebSocketSession, "The room doesn't exist");
             return;
         }
         Game game = room.getGame();
 
-        Consumer<JsonNode> sendMessage = payload -> sendTextMessage(session, sessionLock, payload);
+        Consumer<JsonNode> sendMessage = payload -> sendTextMessage(playerWebSocketSession, payload);
         Consumer<String> callbackEvent = e -> sendEvent(code, e);
 
         try {
@@ -214,7 +246,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             log.debug("Error processing event {} from user {} in room {}: {}",
                     event, userId, code, e.getLocalizedMessage());
             log.trace("Event processing error", e);
-            sendErrorMessage(session, sessionLock, processEventError(e));
+            sendErrorMessage(playerWebSocketSession, processEventError(e));
         }
 
         synchronized (room) {
@@ -420,18 +452,14 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void sendErrorMessage(PlayerWebSocketSession playerWebSocketSession, String message) {
-        sendErrorMessage(playerWebSocketSession.webSocketSession, playerWebSocketSession.lock, message);
+        sendErrorMessage(playerWebSocketSession, mapper.getNodeFactory().textNode(message));
     }
 
-    private void sendErrorMessage(WebSocketSession webSocketSession, Lock lock, String message) {
-        sendErrorMessage(webSocketSession, lock, mapper.getNodeFactory().textNode(message));
-    }
-
-    private void sendErrorMessage(WebSocketSession webSocketSession, Lock lock, JsonNode data) {
+    private void sendErrorMessage(PlayerWebSocketSession playerWebSocketSession, JsonNode data) {
         ObjectNode errorNode = mapper.createObjectNode();
         errorNode.put(EVENT_PROPERTY_NAME, ERROR);
         errorNode.set(DATA_PROPERTY_NAME, data);
-        sendTextMessage(webSocketSession, lock, errorNode);
+        sendTextMessage(playerWebSocketSession, errorNode);
     }
 
     private JsonNode processEventError(Exception e) {
@@ -457,12 +485,26 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             String eventJson = mapper.writeValueAsString(payload);
             TextMessage playersMessage = new TextMessage(eventJson);
             webSocketSession.sendMessage(playersMessage);
-        } catch (IOException | IllegalStateException e) {
+        } catch (IOException | IllegalStateException | SessionLimitExceededException e) {
             // Ошибка отправки одному клиенту не должна прерывать рассылку остальным
             log.warn("Unable to send message to websocket session {}: {}",
                     webSocketSession.getId(), e.getLocalizedMessage());
+            if (e instanceof SessionLimitExceededException) {
+                closeQuietly(webSocketSession);
+            }
         } finally {
             lock.unlock();
+        }
+    }
+
+    private void closeQuietly(WebSocketSession webSocketSession) {
+        try {
+            if (webSocketSession.isOpen()) {
+                webSocketSession.close(CloseStatus.SESSION_NOT_RELIABLE);
+            }
+        } catch (IOException | RuntimeException e) {
+            log.debug("Unable to close websocket session {}: {}",
+                    webSocketSession.getId(), e.getLocalizedMessage());
         }
     }
 
@@ -474,7 +516,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
         log.trace("Cleaning websocket session resources for user {} in room {}", userId, code);
 
-        sessionLockMap.remove(session.getId());
+        playerSessionsById.remove(session.getId());
 
         RoomWebSocketSessionsHolder roomWebSocketSessionsHolder = roomSessionsMap.get(code);
         if (roomWebSocketSessionsHolder == null) {

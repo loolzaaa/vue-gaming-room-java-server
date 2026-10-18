@@ -7,6 +7,7 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -19,6 +20,7 @@ import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.controller.RoomContr
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Game;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.GameService;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.RoomService;
+import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.settings.ServerSettings;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.task.RoomCleanTask;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.GameWebSocketHandler;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.TokenHandshakeInterceptor;
@@ -26,6 +28,7 @@ import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.WebSocketE
 
 @AutoConfiguration
 @EnableScheduling
+@EnableConfigurationProperties(VgrProperties.class)
 @ConditionalOnClass({WebSocketHandler.class, WebSocketConfigurer.class})
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class JavaServerAutoConfiguration {
@@ -34,22 +37,29 @@ public class JavaServerAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    RoomService roomService(GameService<? extends Game> gameService) {
-        return new RoomService(gameService);
+    ServerSettings serverSettings(VgrProperties properties) {
+        return properties.toServerSettings();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    RoomService roomService(GameService<? extends Game> gameService, ServerSettings settings) {
+        return new RoomService(gameService, settings);
     }
 
     @Bean
     @ConditionalOnMissingBean
     GameWebSocketHandler gameWebSocketHandler(ObjectMapper mapper,
                                               RoomService roomService,
-                                              WebSocketEventProcessor webSocketEventProcessor) {
-        return new GameWebSocketHandler(mapper, roomService, webSocketEventProcessor);
+                                              WebSocketEventProcessor webSocketEventProcessor,
+                                              ServerSettings settings) {
+        return new GameWebSocketHandler(mapper, roomService, webSocketEventProcessor, settings);
     }
 
     @Bean
     @ConditionalOnMissingBean
-    GameController gameController(GameService<?> gameService) {
-        return new GameController(gameService);
+    GameController gameController(GameService<?> gameService, ServerSettings settings) {
+        return new GameController(gameService, settings);
     }
 
     @Bean
@@ -60,8 +70,10 @@ public class JavaServerAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    RoomCleanTask roomCleanTask(GameWebSocketHandler gameWebSocketHandler, RoomService roomService) {
-        return new RoomCleanTask(roomService, gameWebSocketHandler);
+    RoomCleanTask roomCleanTask(GameWebSocketHandler gameWebSocketHandler,
+                                RoomService roomService,
+                                ServerSettings settings) {
+        return new RoomCleanTask(roomService, gameWebSocketHandler, settings);
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -69,18 +81,22 @@ public class JavaServerAutoConfiguration {
     static class WebSocketAutoConfiguration implements WebSocketConfigurer {
 
         private final GameWebSocketHandler webSocketHandler;
+        private final VgrProperties properties;
 
-        WebSocketAutoConfiguration(GameWebSocketHandler webSocketHandler) {
+        WebSocketAutoConfiguration(GameWebSocketHandler webSocketHandler, VgrProperties properties) {
             this.webSocketHandler = webSocketHandler;
+            this.properties = properties;
         }
 
         @Override
         public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-            final String endpointPath = "/game-ws";
+            final String endpointPath = properties.getWebSocket().getEndpointPath();
+            final String[] allowedOrigins = properties.getWebSocket().getAllowedOrigins()
+                    .toArray(String[]::new);
             registry
                     .addHandler(webSocketHandler, endpointPath)
                     .addInterceptors(new TokenHandshakeInterceptor())
-                    .setAllowedOriginPatterns("*");
+                    .setAllowedOriginPatterns(allowedOrigins);
             log.info("Registered websocket endpoint: {}", endpointPath);
         }
     }

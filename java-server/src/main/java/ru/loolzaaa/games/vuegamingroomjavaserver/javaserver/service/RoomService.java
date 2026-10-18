@@ -1,29 +1,34 @@
 package ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service;
 
 import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.dto.RoomDTO;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.exception.RoomException;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Game;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Member;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Room;
+import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.settings.ServerSettings;
 
+import java.text.Normalizer;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.regex.Pattern;
 
-@RequiredArgsConstructor
 public class RoomService {
 
     private static final String ROOM_CODE_CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     private static final int ROOM_CODE_LENGTH = 4;
-    private static final int MAX_ROOM_MEMBERS = 200;
+    private static final Pattern ROOM_CODE_PATTERN = Pattern.compile("[A-Z]{4}");
+    private static final Pattern COLOR_PATTERN = Pattern.compile("#[0-9a-fA-F]{6}");
+    private static final int MAX_USER_ID_LENGTH = 64;
     private static final int MAX_MEMBER_COLOR = 0xFFFFFF;
     private static final String MEMBER_COLOR_FORMAT = "#%06x";
 
@@ -33,17 +38,24 @@ public class RoomService {
     private final Lock roomsLock = new ReentrantLock();
 
     private final GameService<? extends Game> gameService;
+    private final int maxMembers;
+    private final int maxNicknameLength;
+
+    public RoomService(GameService<? extends Game> gameService) {
+        this(gameService, ServerSettings.defaults());
+    }
+
+    public RoomService(GameService<? extends Game> gameService, ServerSettings settings) {
+        this.gameService = Objects.requireNonNull(gameService, "gameService must not be null");
+        this.maxMembers = settings.room().maxMembers();
+        this.maxNicknameLength = settings.room().maxNicknameLength();
+    }
 
     public RoomDTO createRoom(String userId, String nickname) {
-        if (nickname == null || nickname.trim().isEmpty()) {
-            throw new RoomException("Nickname must be at least 1 character length");
-        }
-        nickname = nickname.trim();
+        nickname = normalizeNickname(nickname);
+        userId = normalizeUserId(userId);
 
         final String webSocketToken = UUID.randomUUID().toString();
-        if (userId == null) {
-            userId = UUID.randomUUID().toString();
-        }
 
         Member member = new Member();
         member.setUserId(userId);
@@ -73,10 +85,7 @@ public class RoomService {
     }
 
     public RoomDTO joinToRoom(String code, String userId, String nickname) {
-        if (nickname == null || nickname.trim().isEmpty()) {
-            throw new RoomException("Nickname must be at least 1 character length");
-        }
-        nickname = nickname.trim();
+        nickname = normalizeNickname(nickname);
 
         Room<? extends Game> room = getRoom(code);
 
@@ -85,6 +94,7 @@ public class RoomService {
 
             Member member = null;
             if (userId != null) {
+                userId = normalizeUserId(userId);
                 member = room.getMemberByUserId(userId);
             }
             boolean existingMember = member != null;
@@ -103,7 +113,7 @@ public class RoomService {
                 throw new RoomException("Game already started");
             }
             // Войти в комнату с максимальным кол-во членов может только тот, кто в ней уже состоит
-            if (!existingMember && room.getMembers().size() >= MAX_ROOM_MEMBERS) {
+            if (!existingMember && room.getMembers().size() >= maxMembers) {
                 throw new RoomException("Room is full");
             }
 
@@ -148,7 +158,7 @@ public class RoomService {
                 throw new RoomException("The member doesn't exist");
             }
 
-            member.setColor(newColor);
+            member.setColor(normalizeColor(newColor));
 
             room.setLastActivity(LocalDateTime.now());
         }
@@ -292,6 +302,9 @@ public class RoomService {
     }
 
     private Room<? extends Game> getRoom(String code) {
+        if (code == null || !ROOM_CODE_PATTERN.matcher(code).matches()) {
+            throw new RoomException("The room doesn't exist");
+        }
         Room<? extends Game> room = rooms.get(code);
         if (room == null) {
             throw new RoomException("The room doesn't exist");
@@ -310,24 +323,68 @@ public class RoomService {
     }
 
     /**
-     * Проверяет, что никнейм не пустой и не занят другим участником комнаты.
+     * Проверяет, что никнейм не пустой, не слишком длинный, не содержит
+     * управляющих символов и не занят другим участником комнаты.
      * Вызывается только при удерживаемой блокировке комнаты.
      *
      * @param excludedUserId идентификатор участника, которому разрешено сохранять свой никнейм
-     * @return нормализованный (обрезанный) никнейм
+     * @return нормализованный (trim + NFC) никнейм
      */
     private String validateNickname(Room<? extends Game> room, String nickname, String excludedUserId) {
-        if (nickname == null || nickname.trim().isEmpty()) {
-            throw new RoomException("Nickname must be at least 1 character length");
-        }
-        String normalizedNickname = nickname.trim();
+        String normalizedNickname = normalizeNickname(nickname);
         boolean sameNicknameExists = room.getMembers().stream()
                 .filter(m -> !m.getUserId().equals(excludedUserId))
-                .anyMatch(m -> normalizedNickname.equals(m.getNickname()));
+                .map(Member::getNickname)
+                .filter(Objects::nonNull)
+                .map(this::normalizeForComparison)
+                .anyMatch(normalizedNickname::equalsIgnoreCase);
         if (sameNicknameExists) {
             throw new RoomException("User with same nickname already exists");
         }
         return normalizedNickname;
+    }
+
+    private String normalizeNickname(String nickname) {
+        if (nickname == null) {
+            throw new RoomException("Nickname must be at least 1 character length");
+        }
+        String trimmedNickname = nickname.trim();
+        if (trimmedNickname.isEmpty()) {
+            throw new RoomException("Nickname must be at least 1 character length");
+        }
+        if (trimmedNickname.codePointCount(0, trimmedNickname.length()) > maxNicknameLength) {
+            throw new RoomException("Nickname must be at most %d characters length"
+                    .formatted(maxNicknameLength));
+        }
+        if (trimmedNickname.codePoints().anyMatch(Character::isISOControl)) {
+            throw new RoomException("Nickname must not contain control characters");
+        }
+        return Normalizer.normalize(trimmedNickname, Normalizer.Form.NFC);
+    }
+
+    private String normalizeForComparison(String nickname) {
+        return Normalizer.normalize(nickname.trim(), Normalizer.Form.NFC);
+    }
+
+    private String normalizeColor(String color) {
+        if (color == null || !COLOR_PATTERN.matcher(color).matches()) {
+            throw new RoomException("Color must be in #RRGGBB format");
+        }
+        return color.toLowerCase(Locale.ROOT);
+    }
+
+    private String normalizeUserId(String userId) {
+        if (userId == null) {
+            return UUID.randomUUID().toString();
+        }
+        String normalizedUserId = userId.trim();
+        if (normalizedUserId.isEmpty()
+                || normalizedUserId.length() > MAX_USER_ID_LENGTH
+                || normalizedUserId.indexOf(':') >= 0
+                || normalizedUserId.codePoints().anyMatch(Character::isISOControl)) {
+            throw new RoomException("Invalid user id");
+        }
+        return normalizedUserId;
     }
 
     /**
