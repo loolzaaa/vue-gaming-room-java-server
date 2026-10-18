@@ -18,7 +18,6 @@ import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.RoomService;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -27,7 +26,8 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
-import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.WebSocketEventProcessor.*;
+import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.WebSocketEventProcessor.DATA_PROPERTY_NAME;
+import static ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.WebSocketEventProcessor.EVENT_PROPERTY_NAME;
 
 
 @RequiredArgsConstructor
@@ -60,7 +60,12 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
         String token = (String) session.getAttributes().get("token");
-        String[] tokenParts = token.split(":");
+        String[] tokenParts = token == null ? new String[0] : token.split(":");
+        if (tokenParts.length != 2) {
+            session.close(CloseStatus.BAD_DATA);
+            log.warn("Incorrect websocket token format for session {}", session.getId());
+            return;
+        }
         String userId = tokenParts[0];
         String webSocketToken = tokenParts[1];
 
@@ -72,7 +77,13 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
 
         session.getAttributes().put("code", code);
-        List<PlayerWebSocketSession> playerWebSocketSessions = roomSessionsMap.get(code).playerWebSocketSessions;
+        RoomWebSocketSessionsHolder roomWebSocketSessionsHolder = roomSessionsMap.get(code);
+        if (roomWebSocketSessionsHolder == null) {
+            session.close(CloseStatus.BAD_DATA);
+            log.warn("Sessions holder for room {} is absent for user with id {}", code, userId);
+            return;
+        }
+        List<PlayerWebSocketSession> playerWebSocketSessions = roomWebSocketSessionsHolder.playerWebSocketSessions;
         PlayerWebSocketSession playerWebSocketSession = new PlayerWebSocketSession(userId, session);
         playerWebSocketSessions.add(playerWebSocketSession);
         sessionLockMap.put(session.getId(), playerWebSocketSession.lock);
@@ -83,7 +94,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
         // Отправка текущего состояния игры (если начата) для вновь подключившегося
         Room<? extends Game> room = roomService.getRooms().get(code);
-        if (room.isGameStarted()) {
+        if (room != null && room.isGameStarted()) {
             ObjectNode gameState = mapper.createObjectNode();
             gameState.put(EVENT_PROPERTY_NAME, GAME_STATE);
             JsonNode gameStateData = webSocketEventProcessor.createGameState(room.getGame(), userId);
@@ -157,6 +168,10 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
         List<PlayerWebSocketSession> playerWebSocketSessions = roomWebSocketSessionsHolder.playerWebSocketSessions;
         Room<?> room = roomService.getRooms().get(code);
+        if (room == null) {
+            log.debug("Skip sending event {} to room {} because it no longer exists", event, code);
+            return;
+        }
         Game game = room.getGame();
 
         switch (event) {
@@ -194,15 +209,18 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 room.setGameStarted(true);
 
                 // Выгнать всех наблюдателей из комнаты после старта игры
-                List<String> spectators = new ArrayList<>();
-                room.getMembers().stream()
+                List<String> spectators = room.getMembers().stream()
                         .filter(Member::isSpectator)
-                        .forEach(member -> spectators.add(member.getUserId()));
+                        .map(Member::getUserId)
+                        .toList();
                 room.getMembers().removeIf(member -> spectators.contains(member.getUserId()));
-                // А также закрыть их сессии
-                playerWebSocketSessions.stream()
+                // А также закрыть их сессии, предварительно убрав из списка рассылки,
+                // чтобы не пытаться отправить им событие старта игры
+                List<PlayerWebSocketSession> spectatorSessions = playerWebSocketSessions.stream()
                         .filter(playerSession -> spectators.contains(playerSession.userId))
-                        .forEach(this::closePlayerSession);
+                        .toList();
+                playerWebSocketSessions.removeAll(spectatorSessions);
+                spectatorSessions.forEach(this::closePlayerSession);
                 for (PlayerWebSocketSession playerWebSocketSession : playerWebSocketSessions) {
                     ObjectNode eventNode = mapper.createObjectNode();
                     eventNode.put(EVENT_PROPERTY_NAME, START_GAME);
@@ -246,6 +264,10 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         String token = (String) session.getAttributes().get("token");
+        if (token == null) {
+            log.debug("Websocket session {} closed without token", session.getId());
+            return;
+        }
         String userId = token.split(":")[0];
         String code = (String) session.getAttributes().get("code");
         cleanSessionResources(session, userId);
@@ -299,13 +321,19 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void sendTextMessage(WebSocketSession webSocketSession, Lock lock, JsonNode payload) {
+        if (!webSocketSession.isOpen()) {
+            log.debug("Skip sending message to closed websocket session {}", webSocketSession.getId());
+            return;
+        }
         lock.lock();
         try {
             String eventJson = mapper.writeValueAsString(payload);
             TextMessage playersMessage = new TextMessage(eventJson);
             webSocketSession.sendMessage(playersMessage);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+        } catch (IOException | IllegalStateException e) {
+            // Ошибка отправки одному клиенту не должна прерывать рассылку остальным
+            log.warn("Unable to send message to websocket session {}: {}",
+                    webSocketSession.getId(), e.getLocalizedMessage());
         } finally {
             lock.unlock();
         }
@@ -313,6 +341,10 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
     private void cleanSessionResources(WebSocketSession session, String userId) {
         String code = (String) session.getAttributes().get("code");
+        if (code == null) {
+            log.trace("Skip cleaning websocket session resources for user {} without room code", userId);
+            return;
+        }
         log.trace("Cleaning websocket session resources for user {} in room {}", userId, code);
 
         sessionLockMap.remove(session.getId());
@@ -324,10 +356,23 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
         roomWebSocketSessionsHolder.lock.lock();
         try {
-            roomWebSocketSessionsHolder.playerWebSocketSessions
-                    .removeIf(e -> e.webSocketSession.getId().equals(session.getId()));
+            List<PlayerWebSocketSession> playerWebSocketSessions = roomWebSocketSessionsHolder.playerWebSocketSessions;
+            playerWebSocketSessions.removeIf(e -> e.webSocketSession.getId().equals(session.getId()));
             log.trace("Remove websocket session from holder for user {} in room {}", userId, code);
+
+            // Участник считается отключившимся, только если у него не осталось других активных сессий
+            boolean userLeftRoom = playerWebSocketSessions.stream()
+                    .noneMatch(playerSession -> playerSession.userId.equals(userId));
+            if (!userLeftRoom) {
+                log.trace("User {} still has active websocket sessions in room {}", userId, code);
+                return;
+            }
+
             Room<?> room = roomService.getRooms().get(code);
+            if (room == null) {
+                log.trace("Room {} already removed", code);
+                return;
+            }
             Member member = room.getMemberByUserId(userId);
             // Если игра не начата, то выгнать вылетевшего из комнаты
             if (!room.isGameStarted()) {
@@ -373,15 +418,14 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    @RequiredArgsConstructor
     private static class RoomWebSocketSessionsHolder {
-        ReentrantLock lock = new ReentrantLock();
-        List<PlayerWebSocketSession> playerWebSocketSessions = new CopyOnWriteArrayList<>();
+        final ReentrantLock lock = new ReentrantLock();
+        final List<PlayerWebSocketSession> playerWebSocketSessions = new CopyOnWriteArrayList<>();
     }
 
     @RequiredArgsConstructor
     private static class PlayerWebSocketSession {
-        ReentrantLock lock = new ReentrantLock();
+        final ReentrantLock lock = new ReentrantLock();
         final String userId;
         final WebSocketSession webSocketSession;
     }
