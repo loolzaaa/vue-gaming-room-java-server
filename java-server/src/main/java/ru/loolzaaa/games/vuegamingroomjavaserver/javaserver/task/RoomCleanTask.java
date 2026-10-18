@@ -32,21 +32,22 @@ public class RoomCleanTask {
     public void clean() {
         LocalDateTime now = LocalDateTime.now();
         List<String> toDeleteRooms = new ArrayList<>();
-        roomService.getRoomsLock().lock();
-        try {
-            for (Room<?> room : roomService.getRooms().values()) {
-                if (room.getLastActivity().plusMinutes(INACTIVE_TIME).isBefore(now)) {
-                    toDeleteRooms.add(room.getCode());
-                    log.debug("Need to remove room {}. Last activity: {}",
-                            room.getCode(), room.getLastActivity());
+        for (Room<?> room : List.copyOf(roomService.getRooms().values())) {
+            String code = room.getCode();
+            synchronized (room) {
+                // Активность могла обновиться, пока мы ждали блокировку комнаты,
+                // поэтому проверяем её повторно и удаляем комнату атомарно с проверкой
+                if (!room.getLastActivity().plusMinutes(INACTIVE_TIME).isBefore(now)) {
+                    continue;
+                }
+                if (roomService.getRooms().remove(code, room)) {
+                    toDeleteRooms.add(code);
+                    log.debug("Removed room {}. Last activity: {}", code, room.getLastActivity());
                 }
             }
-        } finally {
-            roomService.getRoomsLock().unlock();
         }
         if (!toDeleteRooms.isEmpty()) {
             for (String code : toDeleteRooms) {
-                roomService.getRooms().remove(code);
                 gameWebSocketHandler.removeSessionsListForRoom(code);
             }
             log.info("Removed {} rooms because of inactivity: {}", toDeleteRooms.size(), toDeleteRooms);

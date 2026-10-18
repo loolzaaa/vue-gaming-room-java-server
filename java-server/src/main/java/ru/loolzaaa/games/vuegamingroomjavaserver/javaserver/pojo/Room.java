@@ -17,9 +17,9 @@ public class Room<G extends Game> {
     private final List<Member> members = new CopyOnWriteArrayList<>();
     private final G game;
     @Setter
-    private boolean gameStarted;
+    private volatile boolean gameStarted;
     @Setter
-    private LocalDateTime lastActivity;
+    private volatile LocalDateTime lastActivity;
 
     public Room(String code, String webSocketToken, G game) {
         this.code = code;
