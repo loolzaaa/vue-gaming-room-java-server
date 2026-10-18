@@ -16,9 +16,19 @@ import org.springframework.web.socket.adapter.standard.StandardWebSocketSession;
 import ru.loolzaaa.games.vuegamingroomjavaserver.autoconfigure.JavaServerAutoConfiguration;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.controller.RoomController;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.dto.RoomDTO;
+import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.exception.RoomException;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.RoomService;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket.GameWebSocketHandler;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -164,6 +174,119 @@ class JavaServerIntegrationTests {
                 .andExpect(status().isBadRequest());
 
         assertTrue(roomService.getRooms().get(roomDTO.getCode()).isGameStarted());
+    }
+
+    @Test
+    void shouldAllowOnlyOneMemberWithSameNicknameUnderConcurrency() throws Exception {
+        RoomDTO roomDTO = createRoom("concurrent-nickname-admin", "admin");
+        int attempts = 8;
+
+        ExecutorService executor = Executors.newFixedThreadPool(attempts);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Boolean>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < attempts; i++) {
+                String userId = "concurrent-nickname-user-" + i;
+                futures.add(executor.submit(() -> {
+                    start.await();
+                    try {
+                        roomService.joinToRoom(roomDTO.getCode(), userId, "same-nickname");
+                        return true;
+                    } catch (RoomException e) {
+                        return false;
+                    }
+                }));
+            }
+            start.countDown();
+
+            long joined = 0;
+            for (Future<Boolean> future : futures) {
+                if (future.get(5, TimeUnit.SECONDS)) {
+                    joined++;
+                }
+            }
+            assertEquals(1, joined);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void shouldNotExceedMaxPlayersUnderConcurrency() throws Exception {
+        RoomDTO roomDTO = createRoom("concurrent-players-admin", "admin");
+        int members = 8;
+        List<String> userIds = new ArrayList<>();
+        for (int i = 0; i < members; i++) {
+            String userId = "concurrent-player-user-" + i;
+            joinRoom(roomDTO.getCode(), userId, "player-" + i);
+            userIds.add(userId);
+        }
+
+        ExecutorService executor = Executors.newFixedThreadPool(members);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Boolean>> futures = new ArrayList<>();
+        try {
+            for (String userId : userIds) {
+                futures.add(executor.submit(() -> {
+                    start.await();
+                    try {
+                        roomService.changeMemberPlayerStatus(roomDTO.getCode(), userId, true);
+                        return true;
+                    } catch (RoomException e) {
+                        return false;
+                    }
+                }));
+            }
+            start.countDown();
+
+            long promoted = 0;
+            for (Future<Boolean> future : futures) {
+                if (future.get(5, TimeUnit.SECONDS)) {
+                    promoted++;
+                }
+            }
+            assertEquals(new IntegrationTestConfiguration.GameImpl().getMaxPlayers(), promoted);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void shouldStartGameOnlyOnceUnderConcurrency() throws Exception {
+        RoomDTO roomDTO = createRoom("concurrent-start-admin", "admin");
+        mockMvc.perform(post("/room/{code}/{userId}/player", roomDTO.getCode(), roomDTO.getUserId())
+                        .param("newStatus", "true"))
+                .andExpect(status().isNoContent());
+
+        int attempts = 8;
+        ExecutorService executor = Executors.newFixedThreadPool(attempts);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Boolean>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < attempts; i++) {
+                futures.add(executor.submit(() -> {
+                    start.await();
+                    try {
+                        roomService.startGame(roomDTO.getCode(), roomDTO.getUserId(), true);
+                        return true;
+                    } catch (RoomException e) {
+                        return false;
+                    }
+                }));
+            }
+            start.countDown();
+
+            long started = 0;
+            for (Future<Boolean> future : futures) {
+                if (future.get(5, TimeUnit.SECONDS)) {
+                    started++;
+                }
+            }
+            assertEquals(1, started);
+            assertTrue(roomService.getRooms().get(roomDTO.getCode()).isGameStarted());
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     private RoomDTO createRoom(String userId, String nickname) throws Exception {
