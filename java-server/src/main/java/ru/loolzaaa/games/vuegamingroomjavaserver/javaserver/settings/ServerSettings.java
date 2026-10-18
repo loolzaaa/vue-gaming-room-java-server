@@ -10,15 +10,23 @@ import java.util.Objects;
  * Ядро не зависит от Spring Boot, поэтому настройки передаются обычным объектом.
  * Стартер связывает их с конфигурационными свойствами {@code vgr.*}.
  */
-public record ServerSettings(RoomSettings room, WebSocketSettings webSocket) {
+public record ServerSettings(RoomSettings room, WebSocketSettings webSocket, HttpSettings http) {
 
     public ServerSettings {
         Objects.requireNonNull(room, "room settings must not be null");
         Objects.requireNonNull(webSocket, "webSocket settings must not be null");
+        Objects.requireNonNull(http, "http settings must not be null");
+    }
+
+    public ServerSettings(RoomSettings room, WebSocketSettings webSocket) {
+        this(room, webSocket, HttpSettings.defaults());
     }
 
     public static ServerSettings defaults() {
-        return new ServerSettings(RoomSettings.defaults(), WebSocketSettings.defaults());
+        return new ServerSettings(
+                RoomSettings.defaults(),
+                WebSocketSettings.defaults(),
+                HttpSettings.defaults());
     }
 
     public record RoomSettings(int maxMembers, Duration inactiveTimeout, int maxNicknameLength) {
@@ -109,6 +117,22 @@ public record ServerSettings(RoomSettings room, WebSocketSettings webSocket) {
                     30,
                     60,
                     Duration.ofSeconds(30));
+        }
+    }
+
+    public record HttpSettings(int rateLimitPerSecond, int rateLimitBurst) {
+
+        public HttpSettings {
+            if (rateLimitPerSecond < 1) {
+                throw new IllegalArgumentException("rateLimitPerSecond must be positive");
+            }
+            if (rateLimitBurst < 1) {
+                throw new IllegalArgumentException("rateLimitBurst must be positive");
+            }
+        }
+
+        public static HttpSettings defaults() {
+            return new HttpSettings(20, 40);
         }
     }
 }

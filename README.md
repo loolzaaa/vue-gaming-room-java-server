@@ -54,6 +54,8 @@ All settings are optional and can be overridden in `application.yml`/`applicatio
 | `vgr.websocket.rate-limit-per-second` | `30` | WebSocket messages per second per session |
 | `vgr.websocket.rate-limit-burst` | `60` | Maximum WebSocket message burst per session |
 | `vgr.websocket.ticket-ttl` | `30s` | Lifetime of a one-time WebSocket ticket |
+| `vgr.http.rate-limit-per-second` | `20` | HTTP requests per second per client address for `/room/**` |
+| `vgr.http.rate-limit-burst` | `40` | Maximum HTTP request burst per client address |
 
 The WebSocket endpoint path is also returned by `GET /game/info` as `wsEndpoint`,
 so clients can discover a custom path automatically.
@@ -65,10 +67,20 @@ so clients can discover a custom path automatically.
 - The recommended WebSocket flow:
   1. `POST /room/{code}/ws-ticket?userId={userId}` with the `X-Member-Token` header.
   2. Connect to `ws(s)://.../game-ws?ticket={ticket}`. Tickets are single-use and expire after `vgr.websocket.ticket-ttl`.
-- The legacy `?token={userId}:{memberToken}` handshake is still accepted for compatibility.
+- Only tickets are accepted during the handshake. The old `?token={userId}:{memberToken}` form is rejected.
 - The server validates that the user is a member of the room and limits concurrent sessions per user.
 - Per-session WebSocket rate limiting closes abusive connections.
-- Use `vgr.websocket.allowed-origins` to restrict allowed origins in production and serve the app over TLS (`wss`).
+- REST requests to `/room/**` are rate-limited per client address (`vgr.http.*`).
+- Use `vgr.websocket.allowed-origins` to restrict allowed origins in production and serve the app over TLS (`wss`). The default `*` is intended for local development only.
+
+#### Container requirements
+
+- The server applies the idle timeout through the native JSR-356 API:
+  `jakarta.websocket.Session#setMaxIdleTimeout`.
+- The servlet container **must support native WebSocket idle timeouts** (Tomcat does).
+  There is intentionally no fallback sweeper: if a container ignores this setting, dead sessions
+  remain until the container/TCP closes them.
+- Per-session text/binary message size limits are also applied through `WebSocketSession`.
 
 #### Validation rules
 
@@ -77,6 +89,20 @@ so clients can discover a custom path automatically.
 - Member colors must use the `#RRGGBB` format; the server normalizes them to lowercase.
 - Room codes consist of 4 uppercase Latin letters.
 - User ids must be non-blank, at most 64 characters, and must not contain `:` or control characters.
+
+#### Known limitations / TODO
+
+- **Slow clients**: each session is protected by `ConcurrentWebSocketSessionDecorator`
+  (`vgr.websocket.send-time-limit` and `vgr.websocket.send-buffer-size`), and a slow client
+  is disconnected when the limit is exceeded. Sending is still synchronous. A fully asynchronous
+  per-session outbound queue with `GAME_STATE`/`UPDATE_MEMBERS` coalescing and send metrics
+  is a planned improvement for larger rooms.
+- **Token rotation / revocation**: member tokens are stable for the room lifetime and are removed
+  together with the member/room. Explicit rotate/revoke/logout-all endpoints are not implemented yet.
+- **Token storage**: the reference Vue client stores the member token in `localStorage`.
+  Protect the application against XSS; for stronger isolation use an HttpOnly cookie or SSO.
+- **Game state concurrency**: game implementations are currently responsible for synchronizing
+  access to their own state; per-room serialization is planned separately.
 
 #### Create game entities
 

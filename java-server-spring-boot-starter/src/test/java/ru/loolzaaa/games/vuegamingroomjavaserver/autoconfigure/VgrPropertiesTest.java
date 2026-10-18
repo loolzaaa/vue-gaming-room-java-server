@@ -33,6 +33,8 @@ class VgrPropertiesTest {
         assertThat(properties.getWebSocket().getRateLimitPerSecond()).isEqualTo(30);
         assertThat(properties.getWebSocket().getRateLimitBurst()).isEqualTo(60);
         assertThat(properties.getWebSocket().getTicketTtl()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(properties.getHttp().getRateLimitPerSecond()).isEqualTo(20);
+        assertThat(properties.getHttp().getRateLimitBurst()).isEqualTo(40);
     }
 
     @Test
@@ -52,7 +54,9 @@ class VgrPropertiesTest {
                 Map.entry("vgr.websocket.max-sessions-per-user", "5"),
                 Map.entry("vgr.websocket.rate-limit-per-second", "10"),
                 Map.entry("vgr.websocket.rate-limit-burst", "20"),
-                Map.entry("vgr.websocket.ticket-ttl", "45s")));
+                Map.entry("vgr.websocket.ticket-ttl", "45s"),
+                Map.entry("vgr.http.rate-limit-per-second", "7"),
+                Map.entry("vgr.http.rate-limit-burst", "14")));
 
         ServerSettings settings = properties.toServerSettings();
 
@@ -70,6 +74,8 @@ class VgrPropertiesTest {
         assertThat(settings.webSocket().rateLimitPerSecond()).isEqualTo(10);
         assertThat(settings.webSocket().rateLimitBurst()).isEqualTo(20);
         assertThat(settings.webSocket().ticketTtl()).isEqualTo(Duration.ofSeconds(45));
+        assertThat(settings.http().rateLimitPerSecond()).isEqualTo(7);
+        assertThat(settings.http().rateLimitBurst()).isEqualTo(14);
     }
 
     @Test

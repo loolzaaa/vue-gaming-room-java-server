@@ -15,6 +15,7 @@ public class VgrProperties {
 
     private final Room room = new Room();
     private final WebSocket webSocket = new WebSocket();
+    private final Http http = new Http();
 
     public Room getRoom() {
         return room;
@@ -22,6 +23,10 @@ public class VgrProperties {
 
     public WebSocket getWebSocket() {
         return webSocket;
+    }
+
+    public Http getHttp() {
+        return http;
     }
 
     public ServerSettings toServerSettings() {
@@ -46,7 +51,10 @@ public class VgrProperties {
                         webSocket.maxSessionsPerUser,
                         webSocket.rateLimitPerSecond,
                         webSocket.rateLimitBurst,
-                        webSocket.ticketTtl));
+                        webSocket.ticketTtl),
+                new ServerSettings.HttpSettings(
+                        http.rateLimitPerSecond,
+                        http.rateLimitBurst));
     }
 
     private static int toIntBytes(DataSize dataSize, String propertyName) {
@@ -198,6 +206,28 @@ public class VgrProperties {
 
         public void setTicketTtl(Duration ticketTtl) {
             this.ticketTtl = ticketTtl;
+        }
+    }
+
+    public static class Http {
+
+        private int rateLimitPerSecond = 20;
+        private int rateLimitBurst = 40;
+
+        public int getRateLimitPerSecond() {
+            return rateLimitPerSecond;
+        }
+
+        public void setRateLimitPerSecond(int rateLimitPerSecond) {
+            this.rateLimitPerSecond = rateLimitPerSecond;
+        }
+
+        public int getRateLimitBurst() {
+            return rateLimitBurst;
+        }
+
+        public void setRateLimitBurst(int rateLimitBurst) {
+            this.rateLimitBurst = rateLimitBurst;
         }
     }
 }
