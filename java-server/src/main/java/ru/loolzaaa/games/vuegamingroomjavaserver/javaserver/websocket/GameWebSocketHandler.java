@@ -48,6 +48,12 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
     private static final int MAX_MESSAGE_SIZE = 64 * 1024;
 
+    private static final String CODE_ATTRIBUTE = "code";
+    private static final String USER_ID_ATTRIBUTE = "userId";
+    private static final String CODE_PROPERTY_NAME = "code";
+    private static final String SPECTATORS_COUNT_PROPERTY_NAME = "spectatorsCount";
+    private static final String MEMBERS_PROPERTY_NAME = "members";
+
     private final Map<String, String> webSocketTokenRoomCodeMap = new ConcurrentHashMap<>();
     private final Map<String, RoomWebSocketSessionsHolder> roomSessionsMap = new ConcurrentHashMap<>();
     private final Lock roomSessionsLock = new ReentrantLock();
@@ -65,7 +71,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         session.setTextMessageSizeLimit(MAX_MESSAGE_SIZE);
         session.setBinaryMessageSizeLimit(MAX_MESSAGE_SIZE);
 
-        String token = (String) session.getAttributes().get("token");
+        String token = (String) session.getAttributes().get(TokenHandshakeInterceptor.TOKEN_ATTRIBUTE);
         String[] tokenParts = token == null ? new String[0] : token.split(":");
         if (tokenParts.length != 2) {
             session.close(CloseStatus.BAD_DATA);
@@ -82,8 +88,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        session.getAttributes().put("code", code);
-        session.getAttributes().put("userId", userId);
+        session.getAttributes().put(CODE_ATTRIBUTE, code);
+        session.getAttributes().put(USER_ID_ATTRIBUTE, userId);
         RoomWebSocketSessionsHolder roomWebSocketSessionsHolder = roomSessionsMap.get(code);
         if (roomWebSocketSessionsHolder == null) {
             session.close(CloseStatus.BAD_DATA);
@@ -157,8 +163,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
 
         // Комната и пользователь берутся из атрибутов сессии, а не из тела сообщения
-        String code = (String) session.getAttributes().get("code");
-        String userId = (String) session.getAttributes().get("userId");
+        String code = (String) session.getAttributes().get(CODE_ATTRIBUTE);
+        String userId = (String) session.getAttributes().get(USER_ID_ATTRIBUTE);
         if (code == null || userId == null) {
             sendErrorMessage(session, sessionLock, "Session is not bound to a room");
             return;
@@ -170,7 +176,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         // Если клиент передал код комнаты, он должен совпадать с комнатой сессии
-        JsonNode codeNode = dataNode.get("code");
+        JsonNode codeNode = dataNode.get(CODE_PROPERTY_NAME);
         if (codeNode != null && (!codeNode.isTextual() || !code.equals(codeNode.asText()))) {
             sendErrorMessage(session, sessionLock, "Room code does not match the session");
             return;
@@ -248,8 +254,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                         List<Member> members = room.getMembers().stream()
                                 .filter(m -> m.isPlayer() && onlinePlayers.contains(m.getUserId()))
                                 .toList();
-                        dataNode.put("spectatorsCount", spectatorsCount);
-                        dataNode.set("members", mapper.valueToTree(members));
+                        dataNode.put(SPECTATORS_COUNT_PROPERTY_NAME, spectatorsCount);
+                        dataNode.set(MEMBERS_PROPERTY_NAME, mapper.valueToTree(members));
                     }
                 } catch (Exception e) {
                     log.error("Unable to create members snapshot for room {}", code, e);
@@ -356,13 +362,13 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        String token = (String) session.getAttributes().get("token");
+        String token = (String) session.getAttributes().get(TokenHandshakeInterceptor.TOKEN_ATTRIBUTE);
         if (token == null) {
             log.debug("Websocket session {} closed without token", session.getId());
             return;
         }
         String userId = token.split(":")[0];
-        String code = (String) session.getAttributes().get("code");
+        String code = (String) session.getAttributes().get(CODE_ATTRIBUTE);
         cleanSessionResources(session, userId);
         log.debug("Websocket connection for user id {} in room {} closed with status {}", userId, code, status);
     }
@@ -461,7 +467,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void cleanSessionResources(WebSocketSession session, String userId) {
-        String code = (String) session.getAttributes().get("code");
+        String code = (String) session.getAttributes().get(CODE_ATTRIBUTE);
         if (code == null) {
             log.trace("Skip cleaning websocket session resources for user {} without room code", userId);
             return;

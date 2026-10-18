@@ -22,7 +22,10 @@ import java.util.concurrent.locks.ReentrantLock;
 public class RoomService {
 
     private static final String ROOM_CODE_CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    private static final int ROOM_CODE_LENGTH = 4;
     private static final int MAX_ROOM_MEMBERS = 200;
+    private static final int MAX_MEMBER_COLOR = 0xFFFFFF;
+    private static final String MEMBER_COLOR_FORMAT = "#%06x";
 
     @Getter
     private final Map<String, Room<? extends Game>> rooms = new ConcurrentHashMap<>();
@@ -156,6 +159,9 @@ public class RoomService {
 
         synchronized (room) {
             checkRoomIsRegistered(code, room);
+            if (room.isGameStarted()) {
+                throw new RoomException("Game already started");
+            }
 
             Member member = room.getMemberByUserId(userId);
             if (member == null) {
@@ -269,13 +275,13 @@ public class RoomService {
         List<Member> players = new ArrayList<>(room.getGame().getMaxPlayers());
         room.getMembers().stream()
                 .filter(Member::isPlayer)
-                .forEach(m -> {
-                    m.setReady(true);
-                    players.add(m);
-                });
+                .forEach(players::add);
+        // Проверка минимума выполняется до изменения флагов готовности,
+        // чтобы неудачный старт не оставлял игроков готовыми к игре
         if (players.size() < room.getGame().getMinPlayers()) {
             throw new RoomException("Players in room less than minimum to start");
         }
+        players.forEach(m -> m.setReady(true));
 
         gameService.startNewGame(room.getGame(), players);
 
@@ -332,7 +338,7 @@ public class RoomService {
         StringBuilder code;
         do {
             code = new StringBuilder();
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < ROOM_CODE_LENGTH; i++) {
                 code.append(ROOM_CODE_CHARACTERS.charAt(
                         ThreadLocalRandom.current().nextInt(ROOM_CODE_CHARACTERS.length())));
             }
@@ -341,7 +347,7 @@ public class RoomService {
     }
 
     private String generateMemberColor() {
-        int nextInt = ThreadLocalRandom.current().nextInt(0xffffff + 1);
-        return String.format("#%06x", nextInt);
+        int nextInt = ThreadLocalRandom.current().nextInt(MAX_MEMBER_COLOR + 1);
+        return String.format(MEMBER_COLOR_FORMAT, nextInt);
     }
 }

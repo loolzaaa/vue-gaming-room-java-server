@@ -16,7 +16,7 @@ public class RoomCleanTask {
 
     private static final Logger log = LoggerFactory.getLogger(RoomCleanTask.class);
 
-    private static final int INACTIVE_TIME = 60;
+    private static final int INACTIVE_TIME_MINUTES = 60;
 
     private final RoomService roomService;
 
@@ -37,7 +37,7 @@ public class RoomCleanTask {
             synchronized (room) {
                 // Активность могла обновиться, пока мы ждали блокировку комнаты,
                 // поэтому проверяем её повторно и удаляем комнату атомарно с проверкой
-                if (!room.getLastActivity().plusMinutes(INACTIVE_TIME).isBefore(now)) {
+                if (!room.getLastActivity().plusMinutes(INACTIVE_TIME_MINUTES).isBefore(now)) {
                     continue;
                 }
                 if (roomService.getRooms().remove(code, room)) {

@@ -16,6 +16,8 @@ public class TokenHandshakeInterceptor implements HandshakeInterceptor {
 
     private static final Logger log = LoggerFactory.getLogger(TokenHandshakeInterceptor.class);
 
+    public static final String TOKEN_ATTRIBUTE = "token";
+
     @Override
     public boolean beforeHandshake(ServerHttpRequest request,
                                    ServerHttpResponse response,
@@ -46,7 +48,7 @@ public class TokenHandshakeInterceptor implements HandshakeInterceptor {
             log.warn("Websocket handshake rejected: invalid token format");
             return false;
         }
-        attributes.put("token", token);
+        attributes.put(TOKEN_ATTRIBUTE, token);
         log.debug("Websocket handshake successful");
         return true;
     }
