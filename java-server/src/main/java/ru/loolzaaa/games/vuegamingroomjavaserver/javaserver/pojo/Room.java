@@ -13,7 +13,6 @@ public class Room<G extends Game> {
 
     @Setter
     private String code;
-    private final String webSocketToken;
     private final List<Member> members = new CopyOnWriteArrayList<>();
     private final G game;
     @Setter
@@ -21,9 +20,8 @@ public class Room<G extends Game> {
     @Setter
     private volatile LocalDateTime lastActivity;
 
-    public Room(String code, String webSocketToken, G game) {
+    public Room(String code, G game) {
         this.code = code;
-        this.webSocketToken = webSocketToken;
         this.lastActivity = LocalDateTime.now();
         this.game = game;
     }

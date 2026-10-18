@@ -16,6 +16,8 @@ import java.util.List;
 @RequestMapping("/room")
 public class RoomController {
 
+    public static final String MEMBER_TOKEN_HEADER = "X-Member-Token";
+
     private final GameWebSocketHandler gameWebSocketHandler;
 
     private final RoomService roomService;
@@ -24,15 +26,20 @@ public class RoomController {
     public RoomDTO createRoom(@RequestParam(value = "userId", required = false) String userId,
                               @RequestParam("nickname") String nickname) {
         RoomDTO roomDTO = roomService.createRoom(userId, nickname);
-        gameWebSocketHandler.createNewSessionsListForRoom(roomDTO.getWsToken(), roomDTO.getCode());
+        gameWebSocketHandler.createNewSessionsListForRoom(roomDTO.getCode());
+        gameWebSocketHandler.registerMemberToken(
+                roomDTO.getCode(), roomDTO.getUserId(), roomDTO.getWsToken());
         return roomDTO;
     }
 
     @PostMapping(path = "/join/{code}", produces = "application/json")
     public RoomDTO joinToRoom(@PathVariable("code") String code,
                               @RequestParam(value = "userId", required = false) String userId,
-                              @RequestParam("nickname") String nickname) {
-        RoomDTO roomDTO = roomService.joinToRoom(code, userId, nickname);
+                              @RequestParam("nickname") String nickname,
+                              @RequestHeader(value = MEMBER_TOKEN_HEADER, required = false) String memberToken) {
+        RoomDTO roomDTO = roomService.joinToRoom(code, userId, nickname, memberToken);
+        gameWebSocketHandler.registerMemberToken(
+                roomDTO.getCode(), roomDTO.getUserId(), roomDTO.getWsToken());
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.UPDATE_MEMBERS);
         return roomDTO;
     }
@@ -41,7 +48,9 @@ public class RoomController {
     @PostMapping("/{code}/{userId}/nickname")
     public void changeMemberNickname(@PathVariable("code") String code,
                                      @PathVariable("userId") String userId,
-                                     @RequestParam("newNickname") String newNickname) {
+                                     @RequestParam("newNickname") String newNickname,
+                                     @RequestHeader(value = MEMBER_TOKEN_HEADER, required = false) String memberToken) {
+        roomService.validateMemberToken(code, userId, memberToken);
         roomService.changeMemberNickname(code, userId, newNickname);
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.UPDATE_MEMBERS);
     }
@@ -50,7 +59,9 @@ public class RoomController {
     @PostMapping("/{code}/{userId}/color")
     public void changeMemberColor(@PathVariable("code") String code,
                                   @PathVariable("userId") String userId,
-                                  @RequestParam("newColor") String newColor) {
+                                  @RequestParam("newColor") String newColor,
+                                  @RequestHeader(value = MEMBER_TOKEN_HEADER, required = false) String memberToken) {
+        roomService.validateMemberToken(code, userId, memberToken);
         roomService.changeMemberColor(code, userId, newColor);
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.UPDATE_MEMBERS);
     }
@@ -59,7 +70,9 @@ public class RoomController {
     @PostMapping("/{code}/{userId}/player")
     public void changeMemberPlayerStatus(@PathVariable("code") String code,
                                          @PathVariable("userId") String userId,
-                                         @RequestParam("newStatus") boolean newStatus) {
+                                         @RequestParam("newStatus") boolean newStatus,
+                                         @RequestHeader(value = MEMBER_TOKEN_HEADER, required = false) String memberToken) {
+        roomService.validateMemberToken(code, userId, memberToken);
         roomService.changeMemberPlayerStatus(code, userId, newStatus);
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.UPDATE_MEMBERS);
     }
@@ -68,7 +81,9 @@ public class RoomController {
     @PostMapping("/{code}/{userId}/ready")
     public void changeMemberReadyStatus(@PathVariable("code") String code,
                                         @PathVariable("userId") String userId,
-                                        @RequestParam("newStatus") boolean newStatus) {
+                                        @RequestParam("newStatus") boolean newStatus,
+                                        @RequestHeader(value = MEMBER_TOKEN_HEADER, required = false) String memberToken) {
+        roomService.validateMemberToken(code, userId, memberToken);
         roomService.changeMemberReadyStatus(code, userId, newStatus);
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.UPDATE_MEMBERS);
     }
@@ -77,7 +92,9 @@ public class RoomController {
     @PostMapping("/{code}/start")
     public void startGame(@PathVariable("code") String code,
                           @RequestParam("userId") String userId,
-                          @RequestParam("forceStart") boolean forceStart) {
+                          @RequestParam("forceStart") boolean forceStart,
+                          @RequestHeader(value = MEMBER_TOKEN_HEADER, required = false) String memberToken) {
+        roomService.validateMemberToken(code, userId, memberToken);
         roomService.startGame(code, userId, forceStart);
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.UPDATE_MEMBERS);
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.START_GAME);
@@ -86,7 +103,9 @@ public class RoomController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @PostMapping("/{code}/restart")
     public void restartGame(@PathVariable("code") String code,
-                            @RequestParam("userId") String userId) {
+                            @RequestParam("userId") String userId,
+                            @RequestHeader(value = MEMBER_TOKEN_HEADER, required = false) String memberToken) {
+        roomService.validateMemberToken(code, userId, memberToken);
         // Перезапуск выполняется атомарно до рассылки событий,
         // чтобы при отказе клиенты не получили RESTART_GAME
         roomService.restartGame(code, userId);
@@ -95,8 +114,20 @@ public class RoomController {
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.START_GAME);
     }
 
+    @PostMapping(path = "/{code}/ws-ticket", produces = "application/json")
+    public GameWebSocketHandler.WsTicket createWsTicket(
+            @PathVariable("code") String code,
+            @RequestParam("userId") String userId,
+            @RequestHeader(value = MEMBER_TOKEN_HEADER, required = false) String memberToken) {
+        roomService.validateMemberToken(code, userId, memberToken);
+        return gameWebSocketHandler.createWsTicket(code, userId);
+    }
+
     @GetMapping("/{code}/spectators")
-    public List<Member> getAllSpectators(@PathVariable("code") String code) {
+    public List<Member> getAllSpectators(@PathVariable("code") String code,
+                                         @RequestParam("userId") String userId,
+                                         @RequestHeader(value = MEMBER_TOKEN_HEADER, required = false) String memberToken) {
+        roomService.validateMemberToken(code, userId, memberToken);
         return roomService.getAllSpectators(code);
     }
 

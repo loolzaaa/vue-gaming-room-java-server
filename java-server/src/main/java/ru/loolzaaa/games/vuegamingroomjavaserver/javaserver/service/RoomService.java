@@ -10,6 +10,8 @@ import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.settings.ServerSetti
 
 import java.text.Normalizer;
 import java.time.LocalDateTime;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -55,10 +57,11 @@ public class RoomService {
         nickname = normalizeNickname(nickname);
         userId = normalizeUserId(userId);
 
-        final String webSocketToken = UUID.randomUUID().toString();
+        final String memberToken = generateMemberToken();
 
         Member member = new Member();
         member.setUserId(userId);
+        member.setWsToken(memberToken);
         member.setNickname(nickname);
         member.setColor(generateMemberColor());
         member.setAdmin(true);
@@ -74,17 +77,21 @@ public class RoomService {
         roomsLock.lock();
         try {
             code = generateRoomCode();
-            room = new Room<>(code, webSocketToken, gameInstance);
+            room = new Room<>(code, gameInstance);
             room.getMembers().add(member);
             rooms.put(code, room);
         } finally {
             roomsLock.unlock();
         }
 
-        return new RoomDTO(code, webSocketToken, room.isGameStarted(), userId);
+        return new RoomDTO(code, memberToken, room.isGameStarted(), userId);
     }
 
     public RoomDTO joinToRoom(String code, String userId, String nickname) {
+        return joinToRoom(code, userId, nickname, null);
+    }
+
+    public RoomDTO joinToRoom(String code, String userId, String nickname, String memberToken) {
         nickname = normalizeNickname(nickname);
 
         Room<? extends Game> room = getRoom(code);
@@ -98,14 +105,22 @@ public class RoomService {
                 member = room.getMemberByUserId(userId);
             }
             boolean existingMember = member != null;
+            final String resolvedMemberToken;
             if (member == null) {
                 String newUserId = userId != null ? userId : UUID.randomUUID().toString();
+                resolvedMemberToken = generateMemberToken();
                 member = new Member();
                 member.setUserId(newUserId);
+                member.setWsToken(resolvedMemberToken);
                 member.setColor(generateMemberColor());
                 member.setAdmin(false);
                 member.setSpectator(true);
                 member.setReady(false);
+            } else {
+                if (!tokensEqual(member.getWsToken(), memberToken)) {
+                    throw new RoomException("Invalid member token");
+                }
+                resolvedMemberToken = member.getWsToken();
             }
 
             // Войти в комнату после старта игры может только тот, кто в ней уже состоит
@@ -126,7 +141,7 @@ public class RoomService {
 
             room.setLastActivity(LocalDateTime.now());
 
-            return new RoomDTO(code, room.getWebSocketToken(), room.isGameStarted(), member.getUserId());
+            return new RoomDTO(code, resolvedMemberToken, room.isGameStarted(), member.getUserId());
         }
     }
 
@@ -258,6 +273,22 @@ public class RoomService {
             return room.getMembers().stream()
                     .filter(Member::isSpectator)
                     .toList();
+        }
+    }
+
+    /**
+     * Проверяет, что переданный токен принадлежит участнику комнаты.
+     */
+    public void validateMemberToken(String code, String userId, String memberToken) {
+        Room<? extends Game> room = getRoom(code);
+
+        synchronized (room) {
+            checkRoomIsRegistered(code, room);
+
+            Member member = room.getMemberByUserId(userId);
+            if (member == null || !tokensEqual(member.getWsToken(), memberToken)) {
+                throw new RoomException("Invalid member token");
+            }
         }
     }
 
@@ -406,5 +437,18 @@ public class RoomService {
     private String generateMemberColor() {
         int nextInt = ThreadLocalRandom.current().nextInt(MAX_MEMBER_COLOR + 1);
         return String.format(MEMBER_COLOR_FORMAT, nextInt);
+    }
+
+    private String generateMemberToken() {
+        return UUID.randomUUID().toString();
+    }
+
+    private boolean tokensEqual(String expected, String actual) {
+        if (expected == null || actual == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                actual.getBytes(StandardCharsets.UTF_8));
     }
 }

@@ -95,7 +95,7 @@ public class JavaServerAutoConfiguration {
                     .toArray(String[]::new);
             registry
                     .addHandler(webSocketHandler, endpointPath)
-                    .addInterceptors(new TokenHandshakeInterceptor())
+                    .addInterceptors(new TokenHandshakeInterceptor(webSocketHandler))
                     .setAllowedOriginPatterns(allowedOrigins);
             log.info("Registered websocket endpoint: {}", endpointPath);
         }

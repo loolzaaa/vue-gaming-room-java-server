@@ -15,6 +15,9 @@ public class Member {
     @JsonIgnore
     @EqualsAndHashCode.Include
     private String userId;
+    @JsonIgnore
+    @ToString.Exclude
+    private String wsToken;
     private String nickname;
     private String color;
     private boolean isAdmin;

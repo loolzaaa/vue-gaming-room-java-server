@@ -26,8 +26,10 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
@@ -56,11 +58,12 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     private static final String SPECTATORS_COUNT_PROPERTY_NAME = "spectatorsCount";
     private static final String MEMBERS_PROPERTY_NAME = "members";
 
-    private final Map<String, String> webSocketTokenRoomCodeMap = new ConcurrentHashMap<>();
     private final Map<String, RoomWebSocketSessionsHolder> roomSessionsMap = new ConcurrentHashMap<>();
     private final Lock roomSessionsLock = new ReentrantLock();
 
     private final Map<String, PlayerWebSocketSession> playerSessionsById = new ConcurrentHashMap<>();
+    private final Map<String, MemberToken> memberTokens = new ConcurrentHashMap<>();
+    private final Map<String, PendingTicket> wsTickets = new ConcurrentHashMap<>();
 
     private final ObjectMapper mapper;
     private final RoomService roomService;
@@ -70,6 +73,20 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     private final long idleTimeoutMs;
     private final int sendTimeLimitMs;
     private final int sendBufferSize;
+    private final int maxSessionsPerUser;
+    private final int rateLimitPerSecond;
+    private final int rateLimitBurst;
+    private final long ticketTtlMs;
+    private final long ticketTtlNanos;
+
+    public record MemberToken(String code, String userId) {
+    }
+
+    public record WsTicket(String ticket, long expiresInMs) {
+    }
+
+    private record PendingTicket(String code, String userId, long expiresAtNanos) {
+    }
 
     public GameWebSocketHandler(ObjectMapper mapper,
                                 RoomService roomService,
@@ -88,6 +105,11 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         this.idleTimeoutMs = settings.webSocket().idleTimeout().toMillis();
         this.sendTimeLimitMs = (int) settings.webSocket().sendTimeLimit().toMillis();
         this.sendBufferSize = settings.webSocket().sendBufferSize();
+        this.maxSessionsPerUser = settings.webSocket().maxSessionsPerUser();
+        this.rateLimitPerSecond = settings.webSocket().rateLimitPerSecond();
+        this.rateLimitBurst = settings.webSocket().rateLimitBurst();
+        this.ticketTtlMs = settings.webSocket().ticketTtl().toMillis();
+        this.ticketTtlNanos = TimeUnit.MILLISECONDS.toNanos(ticketTtlMs);
     }
 
     @Override
@@ -101,25 +123,37 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             }
         }
 
-        String token = (String) session.getAttributes().get(TokenHandshakeInterceptor.TOKEN_ATTRIBUTE);
-        String[] tokenParts = token == null ? new String[0] : token.split(":");
-        if (tokenParts.length != 2) {
+        String code = (String) session.getAttributes().get(CODE_ATTRIBUTE);
+        String userId = (String) session.getAttributes().get(USER_ID_ATTRIBUTE);
+        if (code == null || userId == null) {
+            // Fallback для прямых вызовов/старых интеграций без handshake interceptor
+            String token = (String) session.getAttributes().get(TokenHandshakeInterceptor.TOKEN_ATTRIBUTE);
+            MemberToken tokenInfo = resolveTokenString(token);
+            if (tokenInfo == null) {
+                session.close(CloseStatus.BAD_DATA);
+                log.warn("Incorrect websocket token for session {}", session.getId());
+                return;
+            }
+            code = tokenInfo.code();
+            userId = tokenInfo.userId();
+            session.getAttributes().put(CODE_ATTRIBUTE, code);
+            session.getAttributes().put(USER_ID_ATTRIBUTE, userId);
+        }
+
+        Room<? extends Game> room = roomService.getRooms().get(code);
+        if (room == null) {
             session.close(CloseStatus.BAD_DATA);
-            log.warn("Incorrect websocket token format for session {}", session.getId());
+            log.warn("Room {} is absent for user with id {}", code, userId);
             return;
         }
-        String userId = tokenParts[0];
-        String webSocketToken = tokenParts[1];
-
-        String code = webSocketTokenRoomCodeMap.get(webSocketToken);
-        if (code == null) {
-            session.close(CloseStatus.BAD_DATA);
-            log.warn("Incorrect websocket token for user with id {}", userId);
-            return;
+        synchronized (room) {
+            if (room.getMemberByUserId(userId) == null) {
+                session.close(CloseStatus.POLICY_VIOLATION);
+                log.warn("User {} is not a member of room {}", userId, code);
+                return;
+            }
         }
 
-        session.getAttributes().put(CODE_ATTRIBUTE, code);
-        session.getAttributes().put(USER_ID_ATTRIBUTE, userId);
         RoomWebSocketSessionsHolder roomWebSocketSessionsHolder = roomSessionsMap.get(code);
         if (roomWebSocketSessionsHolder == null) {
             session.close(CloseStatus.BAD_DATA);
@@ -129,17 +163,18 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         List<PlayerWebSocketSession> playerWebSocketSessions = roomWebSocketSessionsHolder.playerWebSocketSessions;
         WebSocketSession concurrentSession = new ConcurrentWebSocketSessionDecorator(
                 session, sendTimeLimitMs, sendBufferSize);
-        PlayerWebSocketSession playerWebSocketSession = new PlayerWebSocketSession(userId, concurrentSession);
+        PlayerWebSocketSession playerWebSocketSession = new PlayerWebSocketSession(
+                userId, concurrentSession, new TokenBucket(rateLimitPerSecond, rateLimitBurst));
         playerWebSocketSessions.add(playerWebSocketSession);
         playerSessionsById.put(session.getId(), playerWebSocketSession);
+        closeExcessSessions(playerWebSocketSessions, playerWebSocketSession);
         log.info("Websocket connection established for user {} in room {}", userId, code);
 
         // Обновить состояние всех членов комнаты из-за вновь подключившегося
         sendEvent(code, UPDATE_MEMBERS);
 
         // Отправка текущего состояния игры (если начата) для вновь подключившегося
-        Room<? extends Game> room = roomService.getRooms().get(code);
-        if (room != null && room.isGameStarted()) {
+        if (room.isGameStarted()) {
             ObjectNode gameState = mapper.createObjectNode();
             gameState.put(EVENT_PROPERTY_NAME, GAME_STATE);
             try {
@@ -163,6 +198,11 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         PlayerWebSocketSession playerWebSocketSession = playerSessionsById.get(session.getId());
         if (playerWebSocketSession == null) {
             log.warn("No registered websocket session found for {}", session.getId());
+            return;
+        }
+        if (!playerWebSocketSession.rateLimiter.tryAcquire()) {
+            sendErrorMessage(playerWebSocketSession, "Rate limit exceeded");
+            closePlayerSession(playerWebSocketSession);
             return;
         }
 
@@ -394,21 +434,27 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        String token = (String) session.getAttributes().get(TokenHandshakeInterceptor.TOKEN_ATTRIBUTE);
-        if (token == null) {
-            log.debug("Websocket session {} closed without token", session.getId());
+        String userId = (String) session.getAttributes().get(USER_ID_ATTRIBUTE);
+        String code = (String) session.getAttributes().get(CODE_ATTRIBUTE);
+        if (userId == null || code == null) {
+            String token = (String) session.getAttributes().get(TokenHandshakeInterceptor.TOKEN_ATTRIBUTE);
+            MemberToken tokenInfo = resolveTokenString(token);
+            if (tokenInfo != null) {
+                userId = tokenInfo.userId();
+                code = tokenInfo.code();
+            }
+        }
+        if (userId == null) {
+            log.debug("Websocket session {} closed without user id", session.getId());
             return;
         }
-        String userId = token.split(":")[0];
-        String code = (String) session.getAttributes().get(CODE_ATTRIBUTE);
         cleanSessionResources(session, userId);
         log.debug("Websocket connection for user id {} in room {} closed with status {}", userId, code, status);
     }
 
-    public void createNewSessionsListForRoom(String webSocketToken, String code) {
+    public void createNewSessionsListForRoom(String code) {
         roomSessionsLock.lock();
         try {
-            webSocketTokenRoomCodeMap.put(webSocketToken, code);
             roomSessionsMap.put(code, new RoomWebSocketSessionsHolder());
         } finally {
             roomSessionsLock.unlock();
@@ -416,25 +462,38 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         log.debug("New sessions list for room {} created", code);
     }
 
+    public void registerMemberToken(String code, String userId, String token) {
+        memberTokens.put(token, new MemberToken(code, userId));
+    }
+
+    public MemberToken resolveMemberToken(String token) {
+        return memberTokens.get(token);
+    }
+
+    public WsTicket createWsTicket(String code, String userId) {
+        long now = System.nanoTime();
+        wsTickets.entrySet().removeIf(entry -> entry.getValue().expiresAtNanos() < now);
+        String ticket = UUID.randomUUID().toString();
+        wsTickets.put(ticket, new PendingTicket(code, userId, now + ticketTtlNanos));
+        return new WsTicket(ticket, ticketTtlMs);
+    }
+
+    public MemberToken consumeWsTicket(String ticket) {
+        PendingTicket pendingTicket = wsTickets.remove(ticket);
+        if (pendingTicket == null || pendingTicket.expiresAtNanos() < System.nanoTime()) {
+            return null;
+        }
+        return new MemberToken(pendingTicket.code(), pendingTicket.userId());
+    }
+
     public void removeSessionsListForRoom(String code) {
         RoomWebSocketSessionsHolder roomWebSocketSessionsHolder;
         roomSessionsLock.lock();
         try {
-            roomWebSocketSessionsHolder = roomSessionsMap.get(code);
-            roomSessionsMap.remove(code);
+            roomWebSocketSessionsHolder = roomSessionsMap.remove(code);
+            memberTokens.entrySet().removeIf(entry -> entry.getValue().code().equals(code));
+            wsTickets.entrySet().removeIf(entry -> entry.getValue().code().equals(code));
             log.trace("WebSocket sessions holder removed for room {}", code);
-
-            String wsToken = null;
-            for (Map.Entry<String, String> pair : webSocketTokenRoomCodeMap.entrySet()) {
-                if (pair.getValue().equals(code)) {
-                    wsToken = pair.getKey();
-                    break;
-                }
-            }
-            if (wsToken != null) {
-                webSocketTokenRoomCodeMap.remove(wsToken);
-                log.trace("WebSocket token removed for room {}", code);
-            }
         } finally {
             roomSessionsLock.unlock();
         }
@@ -508,6 +567,65 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    private MemberToken resolveTokenString(String token) {
+        if (token == null) {
+            return null;
+        }
+        int separator = token.indexOf(':');
+        if (separator <= 0 || separator == token.length() - 1) {
+            return null;
+        }
+        String userId = token.substring(0, separator);
+        MemberToken tokenInfo = memberTokens.get(token.substring(separator + 1));
+        if (tokenInfo == null || !tokenInfo.userId().equals(userId)) {
+            return null;
+        }
+        return tokenInfo;
+    }
+
+    private void closeExcessSessions(List<PlayerWebSocketSession> sessions,
+                                     PlayerWebSocketSession newSession) {
+        List<PlayerWebSocketSession> userSessions = sessions.stream()
+                .filter(session -> !session.webSocketSession.getId().equals(newSession.webSocketSession.getId()))
+                .filter(session -> session.userId.equals(newSession.userId))
+                .toList();
+        int excess = userSessions.size() + 1 - maxSessionsPerUser;
+        for (int i = 0; i < excess; i++) {
+            PlayerWebSocketSession oldSession = userSessions.get(i);
+            sessions.remove(oldSession);
+            playerSessionsById.remove(oldSession.webSocketSession.getId());
+            log.info("Closing excess websocket session {} for user {}",
+                    oldSession.webSocketSession.getId(), oldSession.userId);
+            closePlayerSession(oldSession);
+        }
+    }
+
+    private static final class TokenBucket {
+
+        private final double capacity;
+        private final double tokensPerNano;
+        private double tokens;
+        private long lastRefillNanos;
+
+        TokenBucket(int perSecond, int burst) {
+            this.capacity = burst;
+            this.tokens = burst;
+            this.tokensPerNano = perSecond / 1_000_000_000.0;
+            this.lastRefillNanos = System.nanoTime();
+        }
+
+        synchronized boolean tryAcquire() {
+            long now = System.nanoTime();
+            tokens = Math.min(capacity, tokens + (now - lastRefillNanos) * tokensPerNano);
+            lastRefillNanos = now;
+            if (tokens >= 1) {
+                tokens -= 1;
+                return true;
+            }
+            return false;
+        }
+    }
+
     private void cleanSessionResources(WebSocketSession session, String userId) {
         String code = (String) session.getAttributes().get(CODE_ATTRIBUTE);
         if (code == null) {
@@ -550,10 +668,15 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     return;
                 }
                 Member member = room.getMemberByUserId(userId);
+                if (member == null) {
+                    // Участник уже удалён (например, наблюдатель после старта игры)
+                    memberTokens.values().remove(new MemberToken(code, userId));
+                }
                 // Если игра не начата, то выгнать вылетевшего из комнаты
                 if (!room.isGameStarted()) {
                     log.trace("Kick user {} from room {} because game not started", userId, code);
                     room.getMembers().removeIf(m -> m.getUserId().equals(userId));
+                    memberTokens.values().remove(new MemberToken(code, userId));
                 }
                 // Если вылетевший был админом, то...
                 if (member != null && member.isAdmin()) {
@@ -605,5 +728,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         final ReentrantLock lock = new ReentrantLock();
         final String userId;
         final WebSocketSession webSocketSession;
+        final TokenBucket rateLimiter;
     }
 }

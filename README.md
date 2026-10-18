@@ -50,9 +50,25 @@ All settings are optional and can be overridden in `application.yml`/`applicatio
 | `vgr.websocket.idle-timeout` | `120s` | Idle timeout for WebSocket sessions (`0` disables) |
 | `vgr.websocket.send-time-limit` | `10s` | Maximum time to send a message to one client |
 | `vgr.websocket.send-buffer-size` | `512KB` | Per-session send buffer limit |
+| `vgr.websocket.max-sessions-per-user` | `3` | Maximum active WebSocket sessions per user (oldest are closed) |
+| `vgr.websocket.rate-limit-per-second` | `30` | WebSocket messages per second per session |
+| `vgr.websocket.rate-limit-burst` | `60` | Maximum WebSocket message burst per session |
+| `vgr.websocket.ticket-ttl` | `30s` | Lifetime of a one-time WebSocket ticket |
 
 The WebSocket endpoint path is also returned by `GET /game/info` as `wsEndpoint`,
 so clients can discover a custom path automatically.
+
+#### Security
+
+- Every member gets an individual secret token. The token is returned in `RoomDTO.wsToken` and is not exposed in `UPDATE_MEMBERS` or other member payloads.
+- All mutating REST endpoints require the `X-Member-Token` header. `POST /room/create` does not require it; `POST /room/join/{code}` requires it only when an existing member with the same `userId` is reconnecting.
+- The recommended WebSocket flow:
+  1. `POST /room/{code}/ws-ticket?userId={userId}` with the `X-Member-Token` header.
+  2. Connect to `ws(s)://.../game-ws?ticket={ticket}`. Tickets are single-use and expire after `vgr.websocket.ticket-ttl`.
+- The legacy `?token={userId}:{memberToken}` handshake is still accepted for compatibility.
+- The server validates that the user is a member of the room and limits concurrent sessions per user.
+- Per-session WebSocket rate limiting closes abusive connections.
+- Use `vgr.websocket.allowed-origins` to restrict allowed origins in production and serve the app over TLS (`wss`).
 
 #### Validation rules
 

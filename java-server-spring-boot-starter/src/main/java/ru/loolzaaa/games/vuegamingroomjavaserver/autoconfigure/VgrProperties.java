@@ -42,7 +42,11 @@ public class VgrProperties {
                         toIntBytes(webSocket.maxMessageSize, "max-message-size"),
                         webSocket.idleTimeout,
                         webSocket.sendTimeLimit,
-                        toIntBytes(webSocket.sendBufferSize, "send-buffer-size")));
+                        toIntBytes(webSocket.sendBufferSize, "send-buffer-size"),
+                        webSocket.maxSessionsPerUser,
+                        webSocket.rateLimitPerSecond,
+                        webSocket.rateLimitBurst,
+                        webSocket.ticketTtl));
     }
 
     private static int toIntBytes(DataSize dataSize, String propertyName) {
@@ -111,6 +115,10 @@ public class VgrProperties {
         private Duration idleTimeout = Duration.ofSeconds(120);
         private Duration sendTimeLimit = Duration.ofSeconds(10);
         private DataSize sendBufferSize = DataSize.ofKilobytes(512);
+        private int maxSessionsPerUser = 3;
+        private int rateLimitPerSecond = 30;
+        private int rateLimitBurst = 60;
+        private Duration ticketTtl = Duration.ofSeconds(30);
 
         public String getEndpointPath() {
             return endpointPath;
@@ -158,6 +166,38 @@ public class VgrProperties {
 
         public void setSendBufferSize(DataSize sendBufferSize) {
             this.sendBufferSize = sendBufferSize;
+        }
+
+        public int getMaxSessionsPerUser() {
+            return maxSessionsPerUser;
+        }
+
+        public void setMaxSessionsPerUser(int maxSessionsPerUser) {
+            this.maxSessionsPerUser = maxSessionsPerUser;
+        }
+
+        public int getRateLimitPerSecond() {
+            return rateLimitPerSecond;
+        }
+
+        public void setRateLimitPerSecond(int rateLimitPerSecond) {
+            this.rateLimitPerSecond = rateLimitPerSecond;
+        }
+
+        public int getRateLimitBurst() {
+            return rateLimitBurst;
+        }
+
+        public void setRateLimitBurst(int rateLimitBurst) {
+            this.rateLimitBurst = rateLimitBurst;
+        }
+
+        public Duration getTicketTtl() {
+            return ticketTtl;
+        }
+
+        public void setTicketTtl(Duration ticketTtl) {
+            this.ticketTtl = ticketTtl;
         }
     }
 }
