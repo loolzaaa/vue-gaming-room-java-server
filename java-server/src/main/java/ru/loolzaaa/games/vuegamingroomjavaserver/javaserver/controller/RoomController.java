@@ -102,7 +102,10 @@ public class RoomController {
 
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     @ExceptionHandler(RoomException.class)
-    public String roomError(RoomException e) {
-        return "{\"message\":\"%s\"}".formatted(e.getLocalizedMessage());
+    public ErrorResponse roomError(RoomException e) {
+        return new ErrorResponse(e.getLocalizedMessage());
+    }
+
+    public record ErrorResponse(String message) {
     }
 }

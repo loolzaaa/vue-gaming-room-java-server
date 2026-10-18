@@ -1,5 +1,6 @@
 package ru.loolzaaa.games.vuegamingroomjavaserver;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.websocket.RemoteEndpoint;
 import org.apache.tomcat.websocket.WsSession;
@@ -287,6 +288,19 @@ class JavaServerIntegrationTests {
         } finally {
             executor.shutdownNow();
         }
+    }
+
+    @Test
+    void shouldReturnJsonErrorForRoomException() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(post("/room/join/{code}", "NONE")
+                        .param("userId", "json-error-user")
+                        .param("nickname", "user"))
+                .andExpect(status().isBadRequest())
+                .andReturn();
+
+        JsonNode body = mapper.readTree(mvcResult.getResponse().getContentAsString());
+        assertEquals("The room doesn't exist", body.get("message").asText());
+        assertEquals(MediaType.APPLICATION_JSON_VALUE, mvcResult.getResponse().getContentType());
     }
 
     private RoomDTO createRoom(String userId, String nickname) throws Exception {
