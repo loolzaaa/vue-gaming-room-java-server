@@ -184,7 +184,6 @@ class GameWebSocketHandlerTests {
     private RoomDTO createRoom(String userId, GameWebSocketHandler handler) {
         RoomDTO roomDTO = roomService.createRoom(userId, "admin");
         handler.createNewSessionsListForRoom(roomDTO.getCode());
-        handler.registerMemberToken(roomDTO.getCode(), roomDTO.getUserId(), roomDTO.getWsToken());
         return roomDTO;
     }
 

@@ -19,6 +19,7 @@ import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.exception.RoomExcept
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Game;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Member;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.pojo.Room;
+import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.security.TokenBucket;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.service.RoomService;
 import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.settings.ServerSettings;
 
@@ -62,7 +63,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     private final Lock roomSessionsLock = new ReentrantLock();
 
     private final Map<String, PlayerWebSocketSession> playerSessionsById = new ConcurrentHashMap<>();
-    private final Map<String, MemberToken> memberTokens = new ConcurrentHashMap<>();
     private final Map<String, PendingTicket> wsTickets = new ConcurrentHashMap<>();
 
     private final ObjectMapper mapper;
@@ -79,7 +79,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     private final long ticketTtlMs;
     private final long ticketTtlNanos;
 
-    public record MemberToken(String code, String userId) {
+    public record WsIdentity(String code, String userId) {
     }
 
     public record WsTicket(String ticket, long expiresInMs) {
@@ -126,18 +126,9 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         String code = (String) session.getAttributes().get(CODE_ATTRIBUTE);
         String userId = (String) session.getAttributes().get(USER_ID_ATTRIBUTE);
         if (code == null || userId == null) {
-            // Fallback для прямых вызовов/старых интеграций без handshake interceptor
-            String token = (String) session.getAttributes().get(TokenHandshakeInterceptor.TOKEN_ATTRIBUTE);
-            MemberToken tokenInfo = resolveTokenString(token);
-            if (tokenInfo == null) {
-                session.close(CloseStatus.BAD_DATA);
-                log.warn("Incorrect websocket token for session {}", session.getId());
-                return;
-            }
-            code = tokenInfo.code();
-            userId = tokenInfo.userId();
-            session.getAttributes().put(CODE_ATTRIBUTE, code);
-            session.getAttributes().put(USER_ID_ATTRIBUTE, userId);
+            session.close(CloseStatus.BAD_DATA);
+            log.warn("Websocket session {} is not bound to a room", session.getId());
+            return;
         }
 
         Room<? extends Game> room = roomService.getRooms().get(code);
@@ -436,14 +427,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         String userId = (String) session.getAttributes().get(USER_ID_ATTRIBUTE);
         String code = (String) session.getAttributes().get(CODE_ATTRIBUTE);
-        if (userId == null || code == null) {
-            String token = (String) session.getAttributes().get(TokenHandshakeInterceptor.TOKEN_ATTRIBUTE);
-            MemberToken tokenInfo = resolveTokenString(token);
-            if (tokenInfo != null) {
-                userId = tokenInfo.userId();
-                code = tokenInfo.code();
-            }
-        }
         if (userId == null) {
             log.debug("Websocket session {} closed without user id", session.getId());
             return;
@@ -462,14 +445,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         log.debug("New sessions list for room {} created", code);
     }
 
-    public void registerMemberToken(String code, String userId, String token) {
-        memberTokens.put(token, new MemberToken(code, userId));
-    }
-
-    public MemberToken resolveMemberToken(String token) {
-        return memberTokens.get(token);
-    }
-
     public WsTicket createWsTicket(String code, String userId) {
         long now = System.nanoTime();
         wsTickets.entrySet().removeIf(entry -> entry.getValue().expiresAtNanos() < now);
@@ -478,12 +453,12 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         return new WsTicket(ticket, ticketTtlMs);
     }
 
-    public MemberToken consumeWsTicket(String ticket) {
+    public WsIdentity consumeWsTicket(String ticket) {
         PendingTicket pendingTicket = wsTickets.remove(ticket);
         if (pendingTicket == null || pendingTicket.expiresAtNanos() < System.nanoTime()) {
             return null;
         }
-        return new MemberToken(pendingTicket.code(), pendingTicket.userId());
+        return new WsIdentity(pendingTicket.code(), pendingTicket.userId());
     }
 
     public void removeSessionsListForRoom(String code) {
@@ -491,7 +466,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         roomSessionsLock.lock();
         try {
             roomWebSocketSessionsHolder = roomSessionsMap.remove(code);
-            memberTokens.entrySet().removeIf(entry -> entry.getValue().code().equals(code));
             wsTickets.entrySet().removeIf(entry -> entry.getValue().code().equals(code));
             log.trace("WebSocket sessions holder removed for room {}", code);
         } finally {
@@ -567,22 +541,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    private MemberToken resolveTokenString(String token) {
-        if (token == null) {
-            return null;
-        }
-        int separator = token.indexOf(':');
-        if (separator <= 0 || separator == token.length() - 1) {
-            return null;
-        }
-        String userId = token.substring(0, separator);
-        MemberToken tokenInfo = memberTokens.get(token.substring(separator + 1));
-        if (tokenInfo == null || !tokenInfo.userId().equals(userId)) {
-            return null;
-        }
-        return tokenInfo;
-    }
-
     private void closeExcessSessions(List<PlayerWebSocketSession> sessions,
                                      PlayerWebSocketSession newSession) {
         List<PlayerWebSocketSession> userSessions = sessions.stream()
@@ -597,32 +555,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             log.info("Closing excess websocket session {} for user {}",
                     oldSession.webSocketSession.getId(), oldSession.userId);
             closePlayerSession(oldSession);
-        }
-    }
-
-    private static final class TokenBucket {
-
-        private final double capacity;
-        private final double tokensPerNano;
-        private double tokens;
-        private long lastRefillNanos;
-
-        TokenBucket(int perSecond, int burst) {
-            this.capacity = burst;
-            this.tokens = burst;
-            this.tokensPerNano = perSecond / 1_000_000_000.0;
-            this.lastRefillNanos = System.nanoTime();
-        }
-
-        synchronized boolean tryAcquire() {
-            long now = System.nanoTime();
-            tokens = Math.min(capacity, tokens + (now - lastRefillNanos) * tokensPerNano);
-            lastRefillNanos = now;
-            if (tokens >= 1) {
-                tokens -= 1;
-                return true;
-            }
-            return false;
         }
     }
 
@@ -668,15 +600,10 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     return;
                 }
                 Member member = room.getMemberByUserId(userId);
-                if (member == null) {
-                    // Участник уже удалён (например, наблюдатель после старта игры)
-                    memberTokens.values().remove(new MemberToken(code, userId));
-                }
                 // Если игра не начата, то выгнать вылетевшего из комнаты
                 if (!room.isGameStarted()) {
                     log.trace("Kick user {} from room {} because game not started", userId, code);
                     room.getMembers().removeIf(m -> m.getUserId().equals(userId));
-                    memberTokens.values().remove(new MemberToken(code, userId));
                 }
                 // Если вылетевший был админом, то...
                 if (member != null && member.isAdmin()) {

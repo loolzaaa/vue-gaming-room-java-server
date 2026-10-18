@@ -407,7 +407,8 @@ class JavaServerIntegrationTests {
         WsSession mockWsSession = mock(WsSession.class);
         when(mockWsSession.getBasicRemote()).thenReturn(mock(RemoteEndpoint.Basic.class));
         webSocketSession.initializeNativeSession(mockWsSession);
-        webSocketSession.getAttributes().put("token", roomDTO.getUserId() + ":" + roomDTO.getWsToken());
+        webSocketSession.getAttributes().put(TokenHandshakeInterceptor.CODE_ATTRIBUTE, roomDTO.getCode());
+        webSocketSession.getAttributes().put(TokenHandshakeInterceptor.USER_ID_ATTRIBUTE, roomDTO.getUserId());
         gameWebSocketHandler.afterConnectionEstablished(webSocketSession);
         return webSocketSession;
     }

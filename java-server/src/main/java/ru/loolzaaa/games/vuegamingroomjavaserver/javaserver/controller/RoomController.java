@@ -27,8 +27,6 @@ public class RoomController {
                               @RequestParam("nickname") String nickname) {
         RoomDTO roomDTO = roomService.createRoom(userId, nickname);
         gameWebSocketHandler.createNewSessionsListForRoom(roomDTO.getCode());
-        gameWebSocketHandler.registerMemberToken(
-                roomDTO.getCode(), roomDTO.getUserId(), roomDTO.getWsToken());
         return roomDTO;
     }
 
@@ -38,8 +36,6 @@ public class RoomController {
                               @RequestParam("nickname") String nickname,
                               @RequestHeader(value = MEMBER_TOKEN_HEADER, required = false) String memberToken) {
         RoomDTO roomDTO = roomService.joinToRoom(code, userId, nickname, memberToken);
-        gameWebSocketHandler.registerMemberToken(
-                roomDTO.getCode(), roomDTO.getUserId(), roomDTO.getWsToken());
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.UPDATE_MEMBERS);
         return roomDTO;
     }

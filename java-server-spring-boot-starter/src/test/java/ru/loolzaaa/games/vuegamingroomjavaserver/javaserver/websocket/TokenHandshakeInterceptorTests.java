@@ -20,7 +20,7 @@ class TokenHandshakeInterceptorTests {
     @Test
     void shouldAcceptValidTicket() {
         when(handler.consumeWsTicket("ticket-1"))
-                .thenReturn(new GameWebSocketHandler.MemberToken("ABCD", "user-1"));
+                .thenReturn(new GameWebSocketHandler.WsIdentity("ABCD", "user-1"));
 
         Map<String, Object> attributes = handshake("http://localhost/game-ws?ticket=ticket-1");
 
@@ -29,29 +29,14 @@ class TokenHandshakeInterceptorTests {
     }
 
     @Test
-    void shouldAcceptValidLegacyToken() {
-        when(handler.resolveMemberToken("secret"))
-                .thenReturn(new GameWebSocketHandler.MemberToken("ABCD", "user-1"));
-
-        Map<String, Object> attributes = handshake("http://localhost/game-ws?token=user-1%3Asecret");
-
-        assertEquals("ABCD", attributes.get(TokenHandshakeInterceptor.CODE_ATTRIBUTE));
-        assertEquals("user-1", attributes.get(TokenHandshakeInterceptor.USER_ID_ATTRIBUTE));
-    }
-
-    @Test
-    void shouldRejectMissingOrInvalidCredentials() {
+    void shouldRejectMissingOrInvalidTicket() {
         assertTrue(handshake("http://localhost/game-ws").isEmpty());
         assertTrue(handshake("http://localhost/game-ws?ticket=unknown").isEmpty());
-        assertTrue(handshake("http://localhost/game-ws?token=user-1").isEmpty());
-        assertTrue(handshake("http://localhost/game-ws?token=user-1%3Aunknown").isEmpty());
+        assertTrue(handshake("http://localhost/game-ws?ticket=").isEmpty());
     }
 
     @Test
-    void shouldRejectTokenForAnotherUser() {
-        when(handler.resolveMemberToken("secret"))
-                .thenReturn(new GameWebSocketHandler.MemberToken("ABCD", "user-2"));
-
+    void shouldRejectLegacyTokenParameter() {
         assertTrue(handshake("http://localhost/game-ws?token=user-1%3Asecret").isEmpty());
     }
 
