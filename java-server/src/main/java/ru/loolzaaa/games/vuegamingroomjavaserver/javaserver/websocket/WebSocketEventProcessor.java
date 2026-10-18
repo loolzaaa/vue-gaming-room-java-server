@@ -11,17 +11,44 @@ public interface WebSocketEventProcessor {
     String EVENT_PROPERTY_NAME = "event";
     String DATA_PROPERTY_NAME = "data";
 
-    JsonNode createGameState(Game g, String userId);
+    /**
+     * Приватное состояние игрока. Вызывается только для участников с ролью игрока.
+     */
+    JsonNode createPlayerState(Game g, String userId);
+
+    /**
+     * Публичное состояние для наблюдателей/экранов. Не должно содержать приватных данных игроков.
+     */
+    JsonNode createDisplayState(Game g);
 
     void updateGameSettings(JsonNode settingsNode,
                             Game g,
                             Consumer<JsonNode> sendMessage,
                             Consumer<String> callbackEvent);
 
-    JsonNode startGame(Game g, String userId);
+    /**
+     * Данные события START_GAME для игрока.
+     */
+    JsonNode startPlayerGame(Game g, String userId);
 
-    JsonNode restartGame(Game g, String userId);
+    /**
+     * Данные события START_GAME для наблюдателя/экрана.
+     */
+    JsonNode startDisplayGame(Game g);
 
+    /**
+     * Данные события RESTART_GAME для игрока.
+     */
+    JsonNode restartPlayerGame(Game g, String userId);
+
+    /**
+     * Данные события RESTART_GAME для наблюдателя/экрана.
+     */
+    JsonNode restartDisplayGame(Game g);
+
+    /**
+     * Входящее игровое событие. Сервер вызывает метод только для игроков.
+     */
     void incomingEvent(
             ObjectNode eventNode,
             Game g,
@@ -29,7 +56,15 @@ public interface WebSocketEventProcessor {
             Consumer<JsonNode> sendMessage,
             Consumer<String> callbackEvent);
 
-    ObjectNode outgoingEvent(String event, Game g, String userId);
+    /**
+     * Payload кастомного события для игрока.
+     */
+    ObjectNode outgoingPlayerEvent(String event, Game g, String userId);
+
+    /**
+     * Payload кастомного события для наблюдателя/экрана.
+     */
+    ObjectNode outgoingDisplayEvent(String event, Game g);
 
     JsonNode processEventError(Exception e);
 }

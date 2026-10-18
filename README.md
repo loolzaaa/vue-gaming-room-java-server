@@ -299,22 +299,28 @@ public class GameServiceImpl implements GameService<GameImpl> {
 
 #### Create game event processor
 
-Any interaction between the player and the game occurs via a websocket. 
-To handle incoming/outgoing events, you need to implement the `WebSocketEventProcessor` interface.
+All interaction between players and the game happens via WebSocket.
+To handle incoming/outgoing events, implement the `WebSocketEventProcessor` interface.
 
-In this exmaple `GameStateDTO` - data transfer object that will contain the complete state of the game. 
-The state must be complete enough to allow reconnection to the game in case of a crash.
+The state is split into two views:
 
-`Consumer<JsonNode> sendMessage` - this consumer allows you to send a message to the player from whom the incoming event came.
+- `PlayerStateDTO` — private state of one player (hand, private resources, available actions);
+- `DisplayStateDTO` — public state for observers/screens (board, visible cards, counts).
 
-`Consumer<String> callbackEvent` - this consumer allows you to send an outgoing event to ALL players after the incoming event has been processed.
+Event names stay the same (`GAME_STATE`, `START_GAME`, `RESTART_GAME`), but the payload is chosen by the
+recipient's role: players receive player data, observers receive display data.
 
-Both callback paths send non-coalescable events by default. `GAME_STATE` and `UPDATE_MEMBERS` are coalesced automatically.
-If a custom event represents only the latest state, inject `GameWebSocketHandler` and use
-`sendEvent(code, event, true)` to coalesce pending messages with the same event name.
+`Consumer<JsonNode> sendMessage` — sends a message to the player from whom the incoming event came.
 
-If you need to indicate an error to the player during incoming event data validation, 
-you can throw any exception, it will be handled by the implemented `WebSocketEventProcessor#processEventError(Exception e)` method.
+`Consumer<String> callbackEvent` — sends an outgoing event to ALL room members after the incoming event
+has been processed.
+
+Both callback paths send non-coalescable events by default. `GAME_STATE` and `UPDATE_MEMBERS` are coalesced
+automatically. If a custom event represents only the latest state, inject `GameWebSocketHandler` and use
+`sendEvent(code, event, true)`.
+
+If you need to indicate an error to the player during incoming event data validation, throw any exception;
+it will be handled by `WebSocketEventProcessor#processEventError(Exception e)`.
 
 ```java
 @Component
@@ -332,11 +338,17 @@ public class GameEventProcessorImpl implements WebSocketEventProcessor {
     private final ObjectMapper mapper;
 
     @Override
-    public JsonNode createGameState(Game g, String userId) {
+    public JsonNode createPlayerState(Game g, String userId) {
         GameImpl game = (GameImpl) g;
+        PlayerStateDTO state = PlayerStateDTO.create(userId, game);
+        return mapper.valueToTree(state);
+    }
 
-        GameStateDTO gameStateDTO = GameStateDTO.create(userId, game);
-        return mapper.valueToTree(gameStateDTO);
+    @Override
+    public JsonNode createDisplayState(Game g) {
+        GameImpl game = (GameImpl) g;
+        DisplayStateDTO state = DisplayStateDTO.create(game);
+        return mapper.valueToTree(state);
     }
 
     @Override
@@ -347,12 +359,22 @@ public class GameEventProcessorImpl implements WebSocketEventProcessor {
     }
 
     @Override
-    public JsonNode startGame(Game g, String userId) {
-        return createGameState(g, userId);
+    public JsonNode startPlayerGame(Game g, String userId) {
+        return createPlayerState(g, userId);
     }
 
     @Override
-    public JsonNode restartGame(Game g, String s) {
+    public JsonNode startDisplayGame(Game g) {
+        return createDisplayState(g);
+    }
+
+    @Override
+    public JsonNode restartPlayerGame(Game g, String userId) {
+        return null;
+    }
+
+    @Override
+    public JsonNode restartDisplayGame(Game g) {
         return null;
     }
 
@@ -367,11 +389,21 @@ public class GameEventProcessorImpl implements WebSocketEventProcessor {
     }
 
     @Override
-    public ObjectNode outgoingEvent(String event, Game g, String userId) {
+    public ObjectNode outgoingPlayerEvent(String event, Game g, String userId) {
         GameImpl game = (GameImpl) g;
 
         return switch (event) {
-            case NEXT_MOVE -> nextMove(game, userId);
+            case NEXT_MOVE -> nextMoveForPlayer(game, userId);
+            default -> null;
+        };
+    }
+
+    @Override
+    public ObjectNode outgoingDisplayEvent(String event, Game g) {
+        GameImpl game = (GameImpl) g;
+
+        return switch (event) {
+            case NEXT_MOVE -> nextMoveForDisplay(game);
             default -> null;
         };
     }
@@ -381,10 +413,17 @@ public class GameEventProcessorImpl implements WebSocketEventProcessor {
         return mapper.getNodeFactory().textNode(e.getLocalizedMessage());
     }
 
-    private ObjectNode nextMove(GameImpl game, String userId) {
+    private ObjectNode nextMoveForPlayer(GameImpl game, String userId) {
         ObjectNode messageNode = mapper.createObjectNode();
         messageNode.put(EVENT_PROPERTY_NAME, GameWebSocketHandler.GAME_STATE);
-        messageNode.set(DATA_PROPERTY_NAME, createGameState(game, userId));
+        messageNode.set(DATA_PROPERTY_NAME, createPlayerState(game, userId));
+        return messageNode;
+    }
+
+    private ObjectNode nextMoveForDisplay(GameImpl game) {
+        ObjectNode messageNode = mapper.createObjectNode();
+        messageNode.put(EVENT_PROPERTY_NAME, GameWebSocketHandler.GAME_STATE);
+        messageNode.set(DATA_PROPERTY_NAME, createDisplayState(game));
         return messageNode;
     }
 
@@ -394,6 +433,15 @@ public class GameEventProcessorImpl implements WebSocketEventProcessor {
     }
 }
 ```
+
+#### Observers and public screens
+
+- Observers are not removed when the game starts; they keep receiving public display state.
+- The room admin may stay an observer and keep admin controls (settings/start/restart).
+- `incomingEvent` is called only for players; observers cannot control the game.
+- `UPDATE_MEMBERS` contains all online members: players and observers. The client filters players for the lobby table.
+- New members may join after the game has started; they always join as observers (`changeMemberPlayerStatus` is blocked after start).
+- Multiple TVs can join as separate observer accounts (each with its own token), or use several WebSocket sessions of one account up to `vgr.websocket.max-sessions-per-user`.
 
 ## Game client
 

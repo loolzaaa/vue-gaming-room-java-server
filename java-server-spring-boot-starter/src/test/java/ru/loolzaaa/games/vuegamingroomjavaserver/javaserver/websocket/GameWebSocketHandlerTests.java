@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -112,6 +113,7 @@ class GameWebSocketHandlerTests {
 
         GameWebSocketHandler handler = new GameWebSocketHandler(mapper, roomService, failingProcessor);
         RoomDTO roomDTO = createRoom("ws-failing-processor", handler);
+        roomService.changeMemberPlayerStatus(roomDTO.getCode(), roomDTO.getUserId(), true);
         TestSession session = connect(roomDTO, handler);
 
         handler.handleTextMessage(session.webSocketSession, new TextMessage(
@@ -181,6 +183,47 @@ class GameWebSocketHandlerTests {
                         maxSessionsPerUser, ratePerSecond, rateBurst, Duration.ofSeconds(30)));
     }
 
+    @Test
+    void shouldSendRoleSpecificStateAndKeepSpectators() throws Exception {
+        RoomDTO admin = createRoom("role-admin", gameWebSocketHandler);
+        RoomDTO player = roomService.joinToRoom(admin.getCode(), "role-player", "player");
+        roomService.changeMemberPlayerStatus(admin.getCode(), player.getUserId(), true);
+
+        TestSession adminSession = connect(admin, gameWebSocketHandler);
+        TestSession playerSession = connect(player, gameWebSocketHandler);
+
+        roomService.startGame(admin.getCode(), admin.getUserId(), true);
+        gameWebSocketHandler.sendEvent(admin.getCode(), GameWebSocketHandler.START_GAME);
+        gameWebSocketHandler.sendEvent(admin.getCode(), GameWebSocketHandler.GAME_STATE);
+
+        assertEquals("display", findEvent(adminSession, GameWebSocketHandler.START_GAME)
+                .get("data").get("view").asText());
+        assertEquals("player", findEvent(playerSession, GameWebSocketHandler.START_GAME)
+                .get("data").get("view").asText());
+        assertEquals("display", findEvent(adminSession, GameWebSocketHandler.GAME_STATE)
+                .get("data").get("view").asText());
+        assertEquals("player", findEvent(playerSession, GameWebSocketHandler.GAME_STATE)
+                .get("data").get("view").asText());
+
+        assertNotNull(roomService.getRooms().get(admin.getCode())
+                .getMemberByUserId(admin.getUserId()));
+    }
+
+    @Test
+    void shouldRejectGameEventsFromSpectators() throws Exception {
+        RoomDTO admin = createRoom("spectator-send", gameWebSocketHandler);
+        RoomDTO player = roomService.joinToRoom(admin.getCode(), "spectator-send-player", "player");
+        roomService.changeMemberPlayerStatus(admin.getCode(), player.getUserId(), true);
+        roomService.startGame(admin.getCode(), admin.getUserId(), true);
+
+        TestSession adminSession = connect(admin, gameWebSocketHandler);
+        gameWebSocketHandler.handleTextMessage(adminSession.webSocketSession, new TextMessage(
+                "{\"event\":\"CUSTOM\",\"data\":{\"code\":\"" + admin.getCode() + "\"}}"));
+
+        assertEquals("Only players can send game events",
+                findEvent(adminSession, "ERROR").get("data").asText());
+    }
+
     private RoomDTO createRoom(String userId, GameWebSocketHandler handler) {
         RoomDTO roomDTO = roomService.createRoom(userId, "admin");
         handler.createNewSessionsListForRoom(roomDTO.getCode());
@@ -218,6 +261,29 @@ class GameWebSocketHandlerTests {
         Awaitility.await().atMost(Duration.ofSeconds(2))
                 .until(() -> !session.sentMessages.isEmpty());
         return mapper.readTree(session.sentMessages.get(session.sentMessages.size() - 1));
+    }
+
+    private JsonNode findEvent(TestSession session, String event) throws Exception {
+        Awaitility.await().atMost(Duration.ofSeconds(2)).until(() -> session.sentMessages.stream()
+                .map(payload -> {
+                    try {
+                        return mapper.readTree(payload);
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                })
+                .anyMatch(node -> event.equals(node.get("event").asText())));
+        return session.sentMessages.stream()
+                .map(payload -> {
+                    try {
+                        return mapper.readTree(payload);
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                })
+                .filter(node -> event.equals(node.get("event").asText()))
+                .findFirst()
+                .orElseThrow();
     }
 
     private record TestSession(StandardWebSocketSession webSocketSession,

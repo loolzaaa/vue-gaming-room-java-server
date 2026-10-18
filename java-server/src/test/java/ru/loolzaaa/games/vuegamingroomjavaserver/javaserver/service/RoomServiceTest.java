@@ -217,12 +217,14 @@ class RoomServiceTest {
     }
 
     @Test
-    void shouldRejectNewMemberAfterGameStarted() {
+    void shouldAllowNewSpectatorAfterGameStarted() {
         RoomDTO roomDTO = createStartedRoom();
 
-        assertThatThrownBy(() -> roomService.joinToRoom(roomDTO.getCode(), "new-user", "new"))
-                .isInstanceOf(RoomException.class)
-                .hasMessage("Game already started");
+        RoomDTO joined = roomService.joinToRoom(roomDTO.getCode(), "new-user", "new");
+
+        assertThat(joined.isGameStarted()).isTrue();
+        assertThat(member(roomDTO.getCode(), "new-user").isSpectator()).isTrue();
+        assertThat(member(roomDTO.getCode(), "new-user").isPlayer()).isFalse();
     }
 
     @Test
@@ -545,6 +547,20 @@ class RoomServiceTest {
         assertThat(gameService.getStartedGames().getFirst())
                 .extracting(Member::getUserId)
                 .containsExactly(ADMIN_ID);
+    }
+
+    @Test
+    void shouldStartGameWhenAdminIsSpectator() {
+        RoomDTO roomDTO = createRoom("admin");
+        roomService.joinToRoom(roomDTO.getCode(), "player-1", "player");
+        roomService.changeMemberPlayerStatus(roomDTO.getCode(), "player-1", true);
+        roomService.changeMemberReadyStatus(roomDTO.getCode(), "player-1", true);
+
+        roomService.startGame(roomDTO.getCode(), ADMIN_ID, false);
+
+        assertThat(room(roomDTO.getCode()).isGameStarted()).isTrue();
+        assertThat(member(roomDTO.getCode(), ADMIN_ID).isSpectator()).isTrue();
+        assertThat(member(roomDTO.getCode(), "player-1").isPlayer()).isTrue();
     }
 
     @Test

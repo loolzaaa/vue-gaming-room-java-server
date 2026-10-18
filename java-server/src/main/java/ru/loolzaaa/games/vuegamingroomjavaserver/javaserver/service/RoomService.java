@@ -123,11 +123,9 @@ public class RoomService {
                 resolvedMemberToken = member.getWsToken();
             }
 
-            // Войти в комнату после старта игры может только тот, кто в ней уже состоит
-            if (!existingMember && room.isGameStarted()) {
-                throw new RoomException("Game already started");
-            }
-            // Войти в комнату с максимальным кол-во членов может только тот, кто в ней уже состоит
+            // После старта игры новый участник может войти только как наблюдатель.
+            // Игроком он стать уже не сможет: смена роли после старта запрещена.
+            // Максимальное количество участников остаётся ограниченным.
             if (!existingMember && room.getMembers().size() >= maxMembers) {
                 throw new RoomException("Room is full");
             }

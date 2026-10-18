@@ -2,6 +2,7 @@ package ru.loolzaaa.games.vuegamingroomjavaserver;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -44,8 +45,15 @@ public class IntegrationTestConfiguration {
     WebSocketEventProcessor webSocketEventProcessor() {
         return new WebSocketEventProcessor() {
             @Override
-            public JsonNode createGameState(Game g, String userId) {
-                return null;
+            public JsonNode createPlayerState(Game g, String userId) {
+                return JsonNodeFactory.instance.objectNode()
+                        .put("view", "player")
+                        .put("userId", userId);
+            }
+
+            @Override
+            public JsonNode createDisplayState(Game g) {
+                return JsonNodeFactory.instance.objectNode().put("view", "display");
             }
 
             @Override
@@ -54,13 +62,33 @@ public class IntegrationTestConfiguration {
             }
 
             @Override
-            public JsonNode startGame(Game g, String userId) {
-                return null;
+            public JsonNode startPlayerGame(Game g, String userId) {
+                return JsonNodeFactory.instance.objectNode()
+                        .put("view", "player")
+                        .put("started", true)
+                        .put("userId", userId);
             }
 
             @Override
-            public JsonNode restartGame(Game g, String userId) {
-                return null;
+            public JsonNode startDisplayGame(Game g) {
+                return JsonNodeFactory.instance.objectNode()
+                        .put("view", "display")
+                        .put("started", true);
+            }
+
+            @Override
+            public JsonNode restartPlayerGame(Game g, String userId) {
+                return JsonNodeFactory.instance.objectNode()
+                        .put("view", "player")
+                        .put("restarted", true)
+                        .put("userId", userId);
+            }
+
+            @Override
+            public JsonNode restartDisplayGame(Game g) {
+                return JsonNodeFactory.instance.objectNode()
+                        .put("view", "display")
+                        .put("restarted", true);
             }
 
             @Override
@@ -69,8 +97,18 @@ public class IntegrationTestConfiguration {
             }
 
             @Override
-            public ObjectNode outgoingEvent(String event, Game g, String userId) {
-                return null;
+            public ObjectNode outgoingPlayerEvent(String event, Game g, String userId) {
+                return JsonNodeFactory.instance.objectNode()
+                        .put("view", "player")
+                        .put("event", event)
+                        .put("userId", userId);
+            }
+
+            @Override
+            public ObjectNode outgoingDisplayEvent(String event, Game g) {
+                return JsonNodeFactory.instance.objectNode()
+                        .put("view", "display")
+                        .put("event", event);
             }
 
             @Override
