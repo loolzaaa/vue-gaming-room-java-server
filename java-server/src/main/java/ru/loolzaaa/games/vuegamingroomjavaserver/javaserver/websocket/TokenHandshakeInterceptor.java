@@ -6,7 +6,10 @@ import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.server.HandshakeInterceptor;
+import org.springframework.web.util.UriComponentsBuilder;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 public class TokenHandshakeInterceptor implements HandshakeInterceptor {
@@ -18,18 +21,34 @@ public class TokenHandshakeInterceptor implements HandshakeInterceptor {
                                    ServerHttpResponse response,
                                    WebSocketHandler wsHandler,
                                    Map<String, Object> attributes) {
-        String query = request.getURI().getQuery();
-        if (query != null) {
-            for (String param : query.split("&")) {
-                if (param.startsWith("token")) {
-                    String token = param.split("=")[1];
-                    attributes.put("token", token);
-                    log.debug("Websocket handshake successful with token: {}", token);
-                    return true;
-                }
-            }
+        String token;
+        try {
+            token = UriComponentsBuilder.fromUri(request.getURI())
+                    .build()
+                    .getQueryParams()
+                    .getFirst("token");
+        } catch (IllegalArgumentException e) {
+            log.warn("Unable to parse websocket handshake query: {}", e.getLocalizedMessage());
+            return false;
         }
-        return false;
+        if (token == null || token.isBlank()) {
+            return false;
+        }
+        try {
+            // query params могут приходить в URL-encoded виде
+            token = URLDecoder.decode(token, StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            log.warn("Websocket handshake rejected: invalid token encoding");
+            return false;
+        }
+        int separator = token.indexOf(':');
+        if (separator <= 0 || separator == token.length() - 1) {
+            log.warn("Websocket handshake rejected: invalid token format");
+            return false;
+        }
+        attributes.put("token", token);
+        log.debug("Websocket handshake successful");
+        return true;
     }
 
     @Override
