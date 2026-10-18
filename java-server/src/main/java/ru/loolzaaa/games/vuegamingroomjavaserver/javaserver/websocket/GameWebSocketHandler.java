@@ -1,5 +1,6 @@
 package ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.websocket;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -45,6 +46,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     private static final String PING = "PING";
     private static final String PONG = "PONG";
 
+    private static final int MAX_MESSAGE_SIZE = 64 * 1024;
+
     private final Map<String, String> webSocketTokenRoomCodeMap = new ConcurrentHashMap<>();
     private final Map<String, RoomWebSocketSessionsHolder> roomSessionsMap = new ConcurrentHashMap<>();
     private final Lock roomSessionsLock = new ReentrantLock();
@@ -59,6 +62,9 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+        session.setTextMessageSizeLimit(MAX_MESSAGE_SIZE);
+        session.setBinaryMessageSizeLimit(MAX_MESSAGE_SIZE);
+
         String token = (String) session.getAttributes().get("token");
         String[] tokenParts = token == null ? new String[0] : token.split(":");
         if (tokenParts.length != 2) {
@@ -72,11 +78,12 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         String code = webSocketTokenRoomCodeMap.get(webSocketToken);
         if (code == null) {
             session.close(CloseStatus.BAD_DATA);
-            log.warn("Incorrect websocket token {} for user with id {}", webSocketToken, userId);
+            log.warn("Incorrect websocket token for user with id {}", userId);
             return;
         }
 
         session.getAttributes().put("code", code);
+        session.getAttributes().put("userId", userId);
         RoomWebSocketSessionsHolder roomWebSocketSessionsHolder = roomSessionsMap.get(code);
         if (roomWebSocketSessionsHolder == null) {
             session.close(CloseStatus.BAD_DATA);
@@ -97,17 +104,22 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         if (room != null && room.isGameStarted()) {
             ObjectNode gameState = mapper.createObjectNode();
             gameState.put(EVENT_PROPERTY_NAME, GAME_STATE);
-            JsonNode gameStateData = webSocketEventProcessor.createGameState(room.getGame(), userId);
-            if (gameStateData != null) {
-                gameState.set(DATA_PROPERTY_NAME, gameStateData);
+            try {
+                JsonNode gameStateData = webSocketEventProcessor.createGameState(room.getGame(), userId);
+                if (gameStateData != null) {
+                    gameState.set(DATA_PROPERTY_NAME, gameStateData);
+                }
+                sendTextMessage(session, playerWebSocketSession.lock, gameState);
+                log.debug("Send game state for user id {} in room {}: {}", userId, code, gameState);
+            } catch (Exception e) {
+                log.error("Unable to create game state for user {} in room {}", userId, code, e);
+                sendErrorMessage(session, playerWebSocketSession.lock, "Unable to create game state");
             }
-            sendTextMessage(session, playerWebSocketSession.lock, gameState);
-            log.debug("Send game state for user id {} in room {}: {}", userId, code, gameState);
         }
     }
 
     @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+    protected void handleTextMessage(WebSocketSession session, TextMessage message) {
         log.debug("Incoming message: {}", message);
 
         Lock sessionLock = sessionLockMap.get(session.getId());
@@ -116,40 +128,67 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        ObjectNode messageNode = (ObjectNode) mapper.readTree(message.getPayload());
-        String event = messageNode.get(EVENT_PROPERTY_NAME).asText();
+        ObjectNode messageNode;
+        String event;
+        try {
+            JsonNode parsedMessage = mapper.readTree(message.getPayload());
+            if (!parsedMessage.isObject()) {
+                sendErrorMessage(session, sessionLock, "Message must be a JSON object");
+                return;
+            }
+            messageNode = (ObjectNode) parsedMessage;
+            JsonNode eventNode = messageNode.get(EVENT_PROPERTY_NAME);
+            if (eventNode == null || !eventNode.isTextual() || eventNode.asText().isBlank()) {
+                sendErrorMessage(session, sessionLock, "Event name is missing");
+                return;
+            }
+            event = eventNode.asText();
+        } catch (JsonProcessingException e) {
+            log.debug("Unable to parse incoming message from session {}: {}",
+                    session.getId(), e.getLocalizedMessage());
+            sendErrorMessage(session, sessionLock, "Malformed JSON message");
+            return;
+        }
 
-        if (event.equals(PING)) {
+        if (PING.equals(event)) {
             messageNode.put(EVENT_PROPERTY_NAME, PONG);
             sendTextMessage(session, sessionLock, messageNode);
             return;
         }
 
-        String code = messageNode.get(DATA_PROPERTY_NAME).get("code").asText();
+        // Комната и пользователь берутся из атрибутов сессии, а не из тела сообщения
+        String code = (String) session.getAttributes().get("code");
+        String userId = (String) session.getAttributes().get("userId");
+        if (code == null || userId == null) {
+            sendErrorMessage(session, sessionLock, "Session is not bound to a room");
+            return;
+        }
+
+        JsonNode dataNode = messageNode.get(DATA_PROPERTY_NAME);
+        if (dataNode == null || !dataNode.isObject()) {
+            sendErrorMessage(session, sessionLock, "Message data is missing");
+            return;
+        }
+        // Если клиент передал код комнаты, он должен совпадать с комнатой сессии
+        JsonNode codeNode = dataNode.get("code");
+        if (codeNode != null && (!codeNode.isTextual() || !code.equals(codeNode.asText()))) {
+            sendErrorMessage(session, sessionLock, "Room code does not match the session");
+            return;
+        }
+
         Room<?> room = roomService.getRooms().get(code);
         RoomWebSocketSessionsHolder roomWebSocketSessionsHolder = roomSessionsMap.get(code);
         if (room == null || roomWebSocketSessionsHolder == null) {
-            ObjectNode errorNode = mapper.createObjectNode();
-            errorNode.put(EVENT_PROPERTY_NAME, ERROR);
-            errorNode.set(DATA_PROPERTY_NAME,
-                    webSocketEventProcessor.processEventError(new RoomException("The room doesn't exist")));
-            sendTextMessage(session, sessionLock, errorNode);
+            sendErrorMessage(session, sessionLock, "The room doesn't exist");
             return;
         }
         Game game = room.getGame();
-
-        List<PlayerWebSocketSession> playerWebSocketSessions = roomWebSocketSessionsHolder.playerWebSocketSessions;
-        String userId = playerWebSocketSessions.stream()
-                .filter(playerWebSocketSession -> playerWebSocketSession.webSocketSession.getId().equals(session.getId()))
-                .map(playerWebSocketSession -> playerWebSocketSession.userId)
-                .findFirst()
-                .orElseThrow();
 
         Consumer<JsonNode> sendMessage = payload -> sendTextMessage(session, sessionLock, payload);
         Consumer<String> callbackEvent = e -> sendEvent(code, e);
 
         try {
-            if (event.equals(UPDATE_SETTINGS)) {
+            if (UPDATE_SETTINGS.equals(event)) {
                 Member member;
                 synchronized (room) {
                     member = room.getMemberByUserId(userId);
@@ -157,19 +196,19 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 if (member == null || !member.isAdmin()) {
                     throw new RoomException("The member doesn't exist or it is not an admin");
                 }
-                webSocketEventProcessor.updateGameSettings(
-                        messageNode.get(DATA_PROPERTY_NAME).get("settings"),
-                        game,
-                        sendMessage,
-                        callbackEvent);
+                JsonNode settingsNode = dataNode.get("settings");
+                if (settingsNode == null || settingsNode.isNull()) {
+                    throw new RoomException("Game settings are missing");
+                }
+                webSocketEventProcessor.updateGameSettings(settingsNode, game, sendMessage, callbackEvent);
             } else {
                 webSocketEventProcessor.incomingEvent(messageNode, game, userId, sendMessage, callbackEvent);
             }
         } catch (Exception e) {
-            ObjectNode errorNode = mapper.createObjectNode();
-            errorNode.put(EVENT_PROPERTY_NAME, ERROR);
-            errorNode.set(DATA_PROPERTY_NAME, webSocketEventProcessor.processEventError(e));
-            sendMessage.accept(errorNode);
+            log.debug("Error processing event {} from user {} in room {}: {}",
+                    event, userId, code, e.getLocalizedMessage());
+            log.trace("Event processing error", e);
+            sendErrorMessage(session, sessionLock, processEventError(e));
         }
 
         synchronized (room) {
@@ -201,15 +240,20 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 ObjectNode dataNode = eventNode.putObject(DATA_PROPERTY_NAME);
                 // Снимок участников строится под блокировкой комнаты,
                 // чтобы не сериализовать частично изменённое состояние
-                synchronized (room) {
-                    long spectatorsCount = room.getMembers().stream()
-                            .filter(m -> m.isSpectator() && onlinePlayers.contains(m.getUserId()))
-                            .count();
-                    List<Member> members = room.getMembers().stream()
-                            .filter(m -> m.isPlayer() && onlinePlayers.contains(m.getUserId()))
-                            .toList();
-                    dataNode.put("spectatorsCount", spectatorsCount);
-                    dataNode.set("members", mapper.valueToTree(members));
+                try {
+                    synchronized (room) {
+                        long spectatorsCount = room.getMembers().stream()
+                                .filter(m -> m.isSpectator() && onlinePlayers.contains(m.getUserId()))
+                                .count();
+                        List<Member> members = room.getMembers().stream()
+                                .filter(m -> m.isPlayer() && onlinePlayers.contains(m.getUserId()))
+                                .toList();
+                        dataNode.put("spectatorsCount", spectatorsCount);
+                        dataNode.set("members", mapper.valueToTree(members));
+                    }
+                } catch (Exception e) {
+                    log.error("Unable to create members snapshot for room {}", code, e);
+                    return;
                 }
                 for (PlayerWebSocketSession playerWebSocketSession : playerWebSocketSessions) {
                     sendTextMessage(playerWebSocketSession, eventNode);
@@ -219,11 +263,18 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 for (PlayerWebSocketSession playerWebSocketSession : playerWebSocketSessions) {
                     ObjectNode eventNode = mapper.createObjectNode();
                     eventNode.put(EVENT_PROPERTY_NAME, GAME_STATE);
-                    JsonNode gameStateData = webSocketEventProcessor.createGameState(room.getGame(), playerWebSocketSession.userId);
-                    if (gameStateData != null) {
-                        eventNode.set(DATA_PROPERTY_NAME, gameStateData);
+                    try {
+                        JsonNode gameStateData = webSocketEventProcessor.createGameState(
+                                room.getGame(), playerWebSocketSession.userId);
+                        if (gameStateData != null) {
+                            eventNode.set(DATA_PROPERTY_NAME, gameStateData);
+                        }
+                        sendTextMessage(playerWebSocketSession, eventNode);
+                    } catch (Exception e) {
+                        log.error("Unable to create game state for user {} in room {}",
+                                playerWebSocketSession.userId, code, e);
+                        sendErrorMessage(playerWebSocketSession, "Unable to create game state");
                     }
-                    sendTextMessage(playerWebSocketSession, eventNode);
                 }
             }
             case START_GAME -> {
@@ -247,9 +298,15 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 for (PlayerWebSocketSession playerWebSocketSession : playerWebSocketSessions) {
                     ObjectNode eventNode = mapper.createObjectNode();
                     eventNode.put(EVENT_PROPERTY_NAME, START_GAME);
-                    JsonNode startGameData = webSocketEventProcessor.startGame(game, playerWebSocketSession.userId);
-                    if (startGameData != null) {
-                        eventNode.set(DATA_PROPERTY_NAME, startGameData);
+                    try {
+                        JsonNode startGameData = webSocketEventProcessor.startGame(
+                                game, playerWebSocketSession.userId);
+                        if (startGameData != null) {
+                            eventNode.set(DATA_PROPERTY_NAME, startGameData);
+                        }
+                    } catch (Exception e) {
+                        log.error("Unable to create start game data for user {} in room {}",
+                                playerWebSocketSession.userId, code, e);
                     }
                     sendTextMessage(playerWebSocketSession, eventNode);
                 }
@@ -258,18 +315,30 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 for (PlayerWebSocketSession playerWebSocketSession : playerWebSocketSessions) {
                     ObjectNode eventNode = mapper.createObjectNode();
                     eventNode.put(EVENT_PROPERTY_NAME, RESTART_GAME);
-                    JsonNode restartGameData = webSocketEventProcessor.restartGame(game, playerWebSocketSession.userId);
-                    if (restartGameData != null) {
-                        eventNode.set(DATA_PROPERTY_NAME, restartGameData);
+                    try {
+                        JsonNode restartGameData = webSocketEventProcessor.restartGame(
+                                game, playerWebSocketSession.userId);
+                        if (restartGameData != null) {
+                            eventNode.set(DATA_PROPERTY_NAME, restartGameData);
+                        }
+                    } catch (Exception e) {
+                        log.error("Unable to create restart game data for user {} in room {}",
+                                playerWebSocketSession.userId, code, e);
                     }
                     sendTextMessage(playerWebSocketSession, eventNode);
                 }
             }
             default -> {
                 for (PlayerWebSocketSession playerWebSocketSession : playerWebSocketSessions) {
-                    ObjectNode eventNode = webSocketEventProcessor.outgoingEvent(event, game, playerWebSocketSession.userId);
-                    if (eventNode != null) {
-                        sendTextMessage(playerWebSocketSession, eventNode);
+                    try {
+                        ObjectNode eventNode = webSocketEventProcessor.outgoingEvent(
+                                event, game, playerWebSocketSession.userId);
+                        if (eventNode != null) {
+                            sendTextMessage(playerWebSocketSession, eventNode);
+                        }
+                    } catch (Exception e) {
+                        log.error("Unable to process outgoing event {} for user {} in room {}",
+                                event, playerWebSocketSession.userId, code, e);
                     }
                 }
             }
@@ -342,6 +411,34 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
     private void sendTextMessage(PlayerWebSocketSession playerWebSocketSession, JsonNode payload) {
         sendTextMessage(playerWebSocketSession.webSocketSession, playerWebSocketSession.lock, payload);
+    }
+
+    private void sendErrorMessage(PlayerWebSocketSession playerWebSocketSession, String message) {
+        sendErrorMessage(playerWebSocketSession.webSocketSession, playerWebSocketSession.lock, message);
+    }
+
+    private void sendErrorMessage(WebSocketSession webSocketSession, Lock lock, String message) {
+        sendErrorMessage(webSocketSession, lock, mapper.getNodeFactory().textNode(message));
+    }
+
+    private void sendErrorMessage(WebSocketSession webSocketSession, Lock lock, JsonNode data) {
+        ObjectNode errorNode = mapper.createObjectNode();
+        errorNode.put(EVENT_PROPERTY_NAME, ERROR);
+        errorNode.set(DATA_PROPERTY_NAME, data);
+        sendTextMessage(webSocketSession, lock, errorNode);
+    }
+
+    private JsonNode processEventError(Exception e) {
+        try {
+            JsonNode errorData = webSocketEventProcessor.processEventError(e);
+            if (errorData != null) {
+                return errorData;
+            }
+        } catch (Exception formattingError) {
+            log.warn("Unable to format event error: {}", formattingError.getLocalizedMessage());
+        }
+        String message = e.getLocalizedMessage() != null ? e.getLocalizedMessage() : "Event processing error";
+        return mapper.getNodeFactory().textNode(message);
     }
 
     private void sendTextMessage(WebSocketSession webSocketSession, Lock lock, JsonNode payload) {
