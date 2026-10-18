@@ -86,7 +86,6 @@ public class RoomService {
             member.setSpectator(true);
             member.setReady(false);
         }
-        member.setNickname(nickname);
 
         // Войти в комнату после старта игры может только тот, кто в ней уже состоит
         if (!existingMember && room.isGameStarted()) {
@@ -96,6 +95,8 @@ public class RoomService {
         if (!existingMember && room.getMembers().size() >= 200) {
             throw new RoomException("Room is full");
         }
+
+        member.setNickname(validateNickname(room, nickname, member.getUserId()));
 
         // Добавляем в комнату только тех, кто ранее не состоял в ней
         if (!existingMember) {
@@ -118,14 +119,7 @@ public class RoomService {
             throw new RoomException("The member doesn't exist");
         }
 
-        long sameNicknameUsers = room.getMembers().stream()
-                .filter(m -> m.getNickname().equals(newNickname))
-                .count();
-        if (sameNicknameUsers > 0) {
-            throw new RoomException("User with same nickname already exists");
-        }
-
-        member.setNickname(newNickname);
+        member.setNickname(validateNickname(room, newNickname, userId));
 
         room.setLastActivity(LocalDateTime.now());
     }
@@ -158,7 +152,7 @@ public class RoomService {
         }
 
         long playersCount = room.getMembers().stream().filter(Member::isPlayer).count();
-        if (playersCount == room.getGame().getMaxPlayers()) {
+        if (newStatus && playersCount == room.getGame().getMaxPlayers()) {
             throw new RoomException("Max players reached");
         }
 
@@ -226,6 +220,21 @@ public class RoomService {
         room.setLastActivity(LocalDateTime.now());
     }
 
+    public void validateRestartGame(String code, String userId) {
+        Room<? extends Game> room = rooms.get(code);
+        if (room == null) {
+            throw new RoomException("The room doesn't exist");
+        }
+        if (!room.isGameStarted()) {
+            throw new RoomException("Game is not started");
+        }
+
+        Member member = room.getMemberByUserId(userId);
+        if (member == null || !member.isAdmin()) {
+            throw new RoomException("The member doesn't exist or it is not an admin");
+        }
+    }
+
     public List<Member> getAllSpectators(String code) {
         Room<? extends Game> room = rooms.get(code);
         if (room == null) {
@@ -235,6 +244,26 @@ public class RoomService {
         return room.getMembers().stream()
                 .filter(Member::isSpectator)
                 .toList();
+    }
+
+    /**
+     * Проверяет, что никнейм не пустой и не занят другим участником комнаты.
+     *
+     * @param excludedUserId идентификатор участника, которому разрешено сохранять свой никнейм
+     * @return нормализованный (обрезанный) никнейм
+     */
+    private String validateNickname(Room<? extends Game> room, String nickname, String excludedUserId) {
+        if (nickname == null || nickname.trim().isEmpty()) {
+            throw new RoomException("Nickname must be at least 1 character length");
+        }
+        String normalizedNickname = nickname.trim();
+        boolean sameNicknameExists = room.getMembers().stream()
+                .filter(m -> !m.getUserId().equals(excludedUserId))
+                .anyMatch(m -> normalizedNickname.equals(m.getNickname()));
+        if (sameNicknameExists) {
+            throw new RoomException("User with same nickname already exists");
+        }
+        return normalizedNickname;
     }
 
     private String generateRoomCode() {

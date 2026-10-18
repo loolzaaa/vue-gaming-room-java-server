@@ -87,6 +87,8 @@ public class RoomController {
     @PostMapping("/{code}/restart")
     public void restartGame(@PathVariable("code") String code,
                             @RequestParam("userId") String userId) {
+        // Сначала проверяем права, чтобы не рассылать RESTART_GAME при отказе
+        roomService.validateRestartGame(code, userId);
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.RESTART_GAME);
         roomService.startGame(code, userId, true);
         gameWebSocketHandler.sendEvent(code, GameWebSocketHandler.UPDATE_MEMBERS);
