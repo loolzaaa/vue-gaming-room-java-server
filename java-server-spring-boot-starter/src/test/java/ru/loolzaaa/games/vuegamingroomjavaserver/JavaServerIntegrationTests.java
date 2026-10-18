@@ -56,7 +56,7 @@ class JavaServerIntegrationTests {
     @Autowired
     GameWebSocketHandler gameWebSocketHandler;
     @Autowired
-    RoomService roomService;
+    RoomService<?> roomService;
 
     @BeforeEach
     void setUp() {

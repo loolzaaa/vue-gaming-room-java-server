@@ -25,12 +25,12 @@ class RoomServiceTest {
     private static final String ADMIN_ID = "admin-id";
 
     private TestGameService gameService;
-    private RoomService roomService;
+    private RoomService<TestGame> roomService;
 
     @BeforeEach
     void setUp() {
         gameService = new TestGameService(1, 2);
-        roomService = new RoomService(gameService);
+        roomService = new RoomService<>(gameService);
     }
 
     // ---------- createRoom ----------
@@ -504,7 +504,7 @@ class RoomServiceTest {
     @Test
     void shouldRejectStartWhenPlayersLessThanMinimum() {
         gameService = new TestGameService(2, 2);
-        roomService = new RoomService(gameService);
+        roomService = new RoomService<>(gameService);
         RoomDTO roomDTO = createRoom("admin");
         roomService.changeMemberPlayerStatus(roomDTO.getCode(), ADMIN_ID, true);
         roomService.changeMemberReadyStatus(roomDTO.getCode(), ADMIN_ID, true);
@@ -519,7 +519,7 @@ class RoomServiceTest {
     @Test
     void shouldNotMutateReadyFlagsWhenForcedStartFails() {
         gameService = new TestGameService(2, 2);
-        roomService = new RoomService(gameService);
+        roomService = new RoomService<>(gameService);
         RoomDTO roomDTO = createRoom("admin");
         roomService.changeMemberPlayerStatus(roomDTO.getCode(), ADMIN_ID, true);
 
@@ -750,7 +750,7 @@ class RoomServiceTest {
         ServerSettings settings = new ServerSettings(
                 new ServerSettings.RoomSettings(2, Duration.ofMinutes(1), 5),
                 ServerSettings.WebSocketSettings.defaults());
-        roomService = new RoomService(gameService, settings);
+        roomService = new RoomService<>(gameService, settings);
         RoomDTO roomDTO = createRoom("admin");
         roomService.joinToRoom(roomDTO.getCode(), "user-1", "Bob");
 

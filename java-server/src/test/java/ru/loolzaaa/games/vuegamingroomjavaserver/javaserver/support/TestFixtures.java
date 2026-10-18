@@ -82,7 +82,7 @@ public final class TestFixtures {
         }
 
         @Override
-        public void startNewGame(Game g, List<Member> members) {
+        public void startNewGame(TestGame g, List<Member> members) {
             startCalls++;
             if (startFailure != null) {
                 throw startFailure;

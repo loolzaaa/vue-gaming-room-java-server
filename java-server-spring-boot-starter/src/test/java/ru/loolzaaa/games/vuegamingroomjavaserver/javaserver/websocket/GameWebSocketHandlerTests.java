@@ -21,6 +21,12 @@ import ru.loolzaaa.games.vuegamingroomjavaserver.javaserver.settings.ServerSetti
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -42,7 +48,7 @@ class GameWebSocketHandlerTests {
     @Autowired
     GameWebSocketHandler gameWebSocketHandler;
     @Autowired
-    RoomService roomService;
+    RoomService<?> roomService;
 
     @Test
     void shouldRespondWithErrorForMalformedJson() throws Exception {
@@ -222,6 +228,61 @@ class GameWebSocketHandlerTests {
 
         assertEquals("Only players can send game events",
                 findEvent(adminSession, "ERROR").get("data").asText());
+    }
+
+    @Test
+    void shouldSerializeGameEventsPerRoom() throws Exception {
+        AtomicInteger activeEvents = new AtomicInteger();
+        AtomicInteger maxActiveEvents = new AtomicInteger();
+        WebSocketEventProcessor processor = mock(WebSocketEventProcessor.class);
+        doAnswer(invocation -> {
+            int active = activeEvents.incrementAndGet();
+            maxActiveEvents.accumulateAndGet(active, Math::max);
+            try {
+                Thread.sleep(100);
+            } finally {
+                activeEvents.decrementAndGet();
+            }
+            return null;
+        }).when(processor).incomingEvent(any(), any(), any(), any(), any());
+
+        GameWebSocketHandler handler = new GameWebSocketHandler(mapper, roomService, processor);
+        RoomDTO admin = roomService.createRoom("game-lock-admin", "admin");
+        handler.createNewSessionsListForRoom(admin.getCode());
+        RoomDTO firstPlayer = roomService.joinToRoom(admin.getCode(), "game-lock-first", "first");
+        RoomDTO secondPlayer = roomService.joinToRoom(admin.getCode(), "game-lock-second", "second");
+        roomService.changeMemberPlayerStatus(admin.getCode(), firstPlayer.getUserId(), true);
+        roomService.changeMemberPlayerStatus(admin.getCode(), secondPlayer.getUserId(), true);
+        roomService.startGame(admin.getCode(), admin.getUserId(), true);
+
+        TestSession firstSession = connect(firstPlayer, handler);
+        TestSession secondSession = connect(secondPlayer, handler);
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<?> first = executor.submit(() -> {
+                start.await();
+                handler.handleTextMessage(firstSession.webSocketSession, customEvent(admin.getCode()));
+                return null;
+            });
+            Future<?> second = executor.submit(() -> {
+                start.await();
+                handler.handleTextMessage(secondSession.webSocketSession, customEvent(admin.getCode()));
+                return null;
+            });
+            start.countDown();
+            first.get(5, TimeUnit.SECONDS);
+            second.get(5, TimeUnit.SECONDS);
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertEquals(1, maxActiveEvents.get());
+    }
+
+    private TextMessage customEvent(String code) {
+        return new TextMessage("{\"event\":\"CUSTOM\",\"data\":{\"code\":\"" + code + "\"}}");
     }
 
     private RoomDTO createRoom(String userId, GameWebSocketHandler handler) {

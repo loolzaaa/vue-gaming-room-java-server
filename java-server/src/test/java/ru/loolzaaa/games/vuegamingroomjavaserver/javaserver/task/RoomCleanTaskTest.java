@@ -21,13 +21,13 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 class RoomCleanTaskTest {
 
-    private RoomService roomService;
+    private RoomService<?> roomService;
     private GameWebSocketHandler gameWebSocketHandler;
     private RoomCleanTask roomCleanTask;
 
     @BeforeEach
     void setUp() {
-        roomService = new RoomService(new TestGameService(1, 2));
+        roomService = new RoomService<>(new TestGameService(1, 2));
         gameWebSocketHandler = mock(GameWebSocketHandler.class);
         roomCleanTask = new RoomCleanTask(roomService, gameWebSocketHandler);
     }
@@ -97,7 +97,7 @@ class RoomCleanTaskTest {
         ServerSettings settings = new ServerSettings(
                 new ServerSettings.RoomSettings(200, Duration.ofMinutes(5), 32),
                 ServerSettings.WebSocketSettings.defaults());
-        roomService = new RoomService(new TestGameService(1, 2), settings);
+        roomService = new RoomService<>(new TestGameService(1, 2), settings);
         gameWebSocketHandler = mock(GameWebSocketHandler.class);
         roomCleanTask = new RoomCleanTask(roomService, gameWebSocketHandler, settings);
 

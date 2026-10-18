@@ -35,7 +35,7 @@ public class IntegrationTestConfiguration {
             }
 
             @Override
-            public void startNewGame(Game g, List<Member> members) {
+            public void startNewGame(GameImpl g, List<Member> members) {
 
             }
         };
